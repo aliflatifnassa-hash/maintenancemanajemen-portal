@@ -1,0 +1,2500 @@
+<!DOCTYPE html>
+<html lang="id" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin Desktop Web Portal - Maintenance Manajemen</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome CDN -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <!-- SheetJS for Excel Reading/Writing -->
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+    <!-- Firebase Compat JS SDK (Compatible with file:// and http://) -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'sans-serif'] },
+                    colors: {
+                        gold: '#FFB300'
+                    }
+                }
+            }
+        }
+
+        // Global Navigation Switcher
+        window.switchTab = function(tabId) {
+            console.log("Switching admin tab to:", tabId);
+            const contents = document.querySelectorAll('.tab-content');
+            contents.forEach(el => el.classList.add('hidden'));
+
+            const navs = document.querySelectorAll('.nav-item');
+            navs.forEach(el => el.classList.remove('bg-amber-500/20', 'text-amber-400', 'font-bold'));
+
+            const target = document.getElementById('tab-' + tabId);
+            if (target) {
+                target.classList.remove('hidden');
+            }
+
+            const activeNav = document.getElementById('nav-' + tabId);
+            if (activeNav) {
+                activeNav.classList.add('bg-amber-500/20', 'text-amber-400', 'font-bold');
+            }
+        };
+
+        window.normalizeAreaName = function(rawArea) {
+            if (!rawArea) return 'Lainnya';
+            const clean = String(rawArea).trim().toUpperCase();
+            if (clean.includes('SMELTER')) return 'Smelter';
+            if (clean.includes('EOS')) return 'EOS';
+            if (clean.includes('KM15') || clean.includes('KM 15') || clean.includes('KM-15')) return 'KM15';
+            return String(rawArea).trim();
+        };
+
+        window.isUnitUnassigned = function(unit) {
+            if (!unit) return true;
+            const mech = String(unit.assignedMechanicId || '').trim().toLowerCase();
+            return mech === '' || mech === 'unassigned' || mech === 'belum ditugaskan' || mech === 'belum' || mech === '-';
+        };
+
+        window.isUnitInWarranty = function(unit) {
+            if (!unit) return false;
+
+            const status = String(unit.warrantyStatus || '').toLowerCase().trim();
+            if (status.includes("out") || status.includes("habis") || status.includes("tidak") || status.includes("non") || status.includes("expired") || status.includes("off") || status === "yes" || status === "ya") {
+                return false;
+            }
+
+            if (unit.warrantyEndDate) {
+                try {
+                    let endDate = window.parseDateRobustlyJS ? window.parseDateRobustlyJS(unit.warrantyEndDate) : null;
+                    if (!endDate) {
+                        const str = String(unit.warrantyEndDate).trim();
+                        if (str.includes('/')) {
+                            const parts = str.split('/');
+                            if (parts.length === 3) endDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]), 23, 59, 59);
+                        } else if (str.includes('-')) {
+                            const parts = str.split('-');
+                            if (parts.length === 3) {
+                                if (parts[0].length === 4) endDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]), 23, 59, 59);
+                                else endDate = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]), 23, 59, 59);
+                            }
+                        } else {
+                            endDate = new Date(str);
+                        }
+                    }
+
+                    if (endDate && !isNaN(endDate.getTime())) {
+                        const now = new Date();
+                        now.setHours(0, 0, 0, 0);
+
+                        if (now.getFullYear() === endDate.getFullYear() && now.getMonth() === endDate.getMonth()) {
+                            return true;
+                        }
+
+                        return endDate.getTime() >= now.getTime();
+                    }
+                } catch(e) {}
+            }
+
+            return true;
+        };
+
+        window.parseDateRobustlyJS = function(val) {
+            if (!val) return null;
+            if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
+            if (typeof val === 'number') {
+                if (val > 86400000) {
+                    const d = new Date(val);
+                    return isNaN(d.getTime()) ? null : d;
+                }
+                return null;
+            }
+
+            const str = String(val).trim();
+            if (!str || str === 'null' || str === 'undefined' || str === '0') return null;
+
+            if (/^\d{9,}$/.test(str)) {
+                const ts = parseInt(str);
+                if (ts > 86400000) {
+                    const d = new Date(ts);
+                    return isNaN(d.getTime()) ? null : d;
+                }
+            }
+
+            if (str.includes('/')) {
+                const parts = str.split('/');
+                if (parts.length === 3) {
+                    const day = parseInt(parts[0]);
+                    const month = parseInt(parts[1]) - 1;
+                    const year = parseInt(parts[2]);
+                    if (year > 1990 && month >= 0 && month <= 11 && day >= 1 && day <= 31) {
+                        return new Date(year, month, day);
+                    }
+                }
+            }
+
+            if (str.includes('-')) {
+                const parts = str.split('-');
+                if (parts.length === 3) {
+                    if (parts[0].length === 4) {
+                        const year = parseInt(parts[0]);
+                        const month = parseInt(parts[1]) - 1;
+                        const day = parseInt(parts[2]);
+                        if (year > 1990 && month >= 0 && month <= 11 && day >= 1 && day <= 31) {
+                            return new Date(year, month, day);
+                        }
+                    } else {
+                        const day = parseInt(parts[0]);
+                        const month = parseInt(parts[1]) - 1;
+                        const year = parseInt(parts[2]);
+                        if (year > 1990 && month >= 0 && month <= 11 && day >= 1 && day <= 31) {
+                            return new Date(year, month, day);
+                        }
+                    }
+                }
+            }
+
+            const d = new Date(str);
+            if (!isNaN(d.getTime()) && d.getFullYear() > 1990) {
+                return d;
+            }
+
+            return null;
+        };
+
+        window.matchDateFlexible = function(rowDateStr, userFilterStr) {
+            if (!userFilterStr) return true;
+            if (!rowDateStr || rowDateStr === '-') return false;
+
+            const rowClean = String(rowDateStr).trim().toLowerCase();
+            const filterClean = String(userFilterStr).trim().toLowerCase();
+
+            function padDate(s) {
+                if (s.includes('/')) {
+                    const p = s.split('/');
+                    if (p.length === 3) {
+                        const d = p[0].padStart(2, '0');
+                        const m = p[1].padStart(2, '0');
+                        const y = p[2];
+                        return `${d}/${m}/${y}`;
+                    }
+                }
+                if (s.includes('-')) {
+                    const p = s.split('-');
+                    if (p.length === 3) {
+                        const d = p[0].padStart(2, '0');
+                        const m = p[1].padStart(2, '0');
+                        const y = p[2];
+                        return `${d}-${m}-${y}`;
+                    }
+                }
+                return s;
+            }
+
+            const rowPadded = padDate(rowClean);
+            const filterPadded = padDate(filterClean);
+
+            if (filterClean.includes('/') && filterClean.split('/').length === 3) {
+                return rowPadded === filterPadded || rowClean === filterClean;
+            }
+            if (filterClean.includes('-') && filterClean.split('-').length === 3) {
+                return rowPadded === filterPadded || rowClean === filterClean;
+            }
+
+            return rowPadded.includes(filterPadded) || rowClean.includes(filterClean);
+        };
+
+        window.getUnitSerialNumber = function(hull, item) {
+            if (item && item.serialNumber) return item.serialNumber;
+            const fleet = window.dbState.excavators || [];
+            const unit = fleet.find(f => (f.hullNumber || f.id) === hull);
+            return unit?.serialNumber || '-';
+        };
+
+        window.getUnitLastHMDateStr = function(unit, history) {
+            if (!unit) return 'Belum Update';
+
+            const timestamps = [];
+
+            if (unit.lastHMUpdateDate) {
+                let parsed = window.parseDateRobustlyJS(unit.lastHMUpdateDate);
+                if (parsed) timestamps.push(parsed.getTime());
+            }
+
+            const hull = unit.hullNumber || unit.id;
+            if (history && history.length > 0 && hull) {
+                const unitHistory = history.filter(h => (h.hullNumber || h.id) === hull);
+                unitHistory.forEach(h => {
+                    const hDate = window.parseDateRobustlyJS(h.date || h.timestamp);
+                    if (hDate) timestamps.push(hDate.getTime());
+                });
+            }
+
+            if (timestamps.length > 0) {
+                const maxTs = Math.max(...timestamps);
+                if (maxTs > 86400000) {
+                    return new Date(maxTs).toLocaleDateString('id-ID');
+                }
+            }
+
+            if (unit.lastHMUpdateDate && typeof unit.lastHMUpdateDate === 'string' && unit.lastHMUpdateDate.trim() !== '') {
+                return unit.lastHMUpdateDate.trim();
+            }
+
+            return 'Belum Update';
+        };
+
+        window.getUnitLastServiceInfo = function(unit, history) {
+            if (!unit) return { dateStr: 'Belum Servis', typeStr: '-', hmStr: '-' };
+            const hull = unit.hullNumber || unit.id;
+            const unitHist = (history || []).filter(h => (h.hullNumber || h.id) === hull || (h.hullNumber || h.id) === unit.id);
+
+            if (unitHist.length === 0) {
+                return { dateStr: 'Belum Servis', typeStr: '-', hmStr: '-' };
+            }
+
+            let latest = unitHist[0];
+            let maxTs = 0;
+            unitHist.forEach(h => {
+                const parsed = window.parseDateRobustlyJS ? window.parseDateRobustlyJS(h.date || h.timestamp) : null;
+                const ts = parsed ? parsed.getTime() : (Number(h.date || h.timestamp) || 0);
+                if (ts > maxTs) {
+                    maxTs = ts;
+                    latest = h;
+                }
+            });
+
+            const dateStr = maxTs > 0 ? new Date(maxTs).toLocaleDateString('id-ID') : (latest.date ? String(latest.date) : 'Belum Servis');
+            const typeStr = latest.serviceType || latest.type || '-';
+            const hmVal = latest.hmAtService !== undefined && latest.hmAtService !== null ? `${latest.hmAtService} HM` : '-';
+            return { dateStr, typeStr, hmStr: hmVal };
+        };
+
+        window.openSingleUnitModal = function(unitId) {
+            document.getElementById('single-unit-doc-id').value = unitId || '';
+            if (unitId) {
+                const fleet = window.dbState.excavators || [];
+                const unit = fleet.find(f => (f.hullNumber || f.id) === unitId);
+                if (unit) {
+                    document.getElementById('single-unit-hull').value = unit.hullNumber || unit.id || '';
+                    document.getElementById('single-unit-brand').value = unit.brand || 'SANY';
+                    document.getElementById('single-unit-model').value = unit.model || 'SY215C';
+                    document.getElementById('single-unit-sn').value = unit.serialNumber || '';
+                    document.getElementById('single-unit-customer').value = unit.customerName || '';
+                    document.getElementById('single-unit-company').value = unit.companyName || '';
+                    document.getElementById('single-unit-phone').value = unit.customerPhone || '';
+                    document.getElementById('single-unit-warranty-date').value = unit.warrantyEndDate || '01/01/2028';
+                    document.getElementById('single-unit-hm').value = unit.currentHM || 0;
+                    document.getElementById('single-unit-handling').value = unit.warrantyHandlingType || 'INTERNAL';
+                    document.getElementById('single-unit-modal-title').innerHTML = `<i class="fa-solid fa-pen-to-square text-blue-500"></i><span>Edit Unit: ${unit.hullNumber || unitId}</span>`;
+                }
+            } else {
+                document.getElementById('single-unit-hull').value = '';
+                document.getElementById('single-unit-brand').value = 'SANY';
+                document.getElementById('single-unit-model').value = 'SY215C';
+                document.getElementById('single-unit-sn').value = '';
+                document.getElementById('single-unit-customer').value = '';
+                document.getElementById('single-unit-company').value = '';
+                document.getElementById('single-unit-phone').value = '';
+                document.getElementById('single-unit-warranty-date').value = '01/01/2028';
+                document.getElementById('single-unit-hm').value = '0';
+                document.getElementById('single-unit-handling').value = 'INTERNAL';
+                document.getElementById('single-unit-modal-title').innerHTML = `<i class="fa-solid fa-truck-monster text-blue-500"></i><span>Tambah Unit Satuan</span>`;
+            }
+            document.getElementById('modal-single-unit').classList.remove('hidden');
+        };
+
+        window.closeSingleUnitModal = function() {
+            document.getElementById('modal-single-unit').classList.add('hidden');
+        };
+
+        window.submitSingleUnit = function() {
+            const docId = document.getElementById('single-unit-doc-id').value.trim();
+            const hull = document.getElementById('single-unit-hull').value.trim();
+            const brand = document.getElementById('single-unit-brand').value.trim() || 'SANY';
+            const model = document.getElementById('single-unit-model').value.trim() || 'SY215C';
+            const sn = document.getElementById('single-unit-sn').value.trim() || '-';
+            const customer = document.getElementById('single-unit-customer').value.trim();
+            const company = document.getElementById('single-unit-company').value.trim();
+            const phone = document.getElementById('single-unit-phone').value.trim();
+            const warrantyDate = document.getElementById('single-unit-warranty-date').value.trim();
+            const hm = parseFloat(document.getElementById('single-unit-hm').value) || 0;
+            const handling = document.getElementById('single-unit-handling').value;
+
+            if (!hull) {
+                alert('Harap isi Kode Unit / Lambung!');
+                return;
+            }
+
+            const targetId = docId || hull;
+            const unitData = {
+                hullNumber: hull,
+                brand: brand,
+                model: model,
+                serialNumber: sn,
+                customerName: customer,
+                companyName: company,
+                customerPhone: phone,
+                warrantyEndDate: warrantyDate,
+                currentHM: hm,
+                nextServiceTargetHM: hm > 0 ? (Math.floor(hm / 500) + 1) * 500 : 500,
+                warrantyHandlingType: handling,
+                warrantyStatus: 'Garansi Aktif',
+                lastHMUpdateDate: new Date().toLocaleDateString('id-ID'),
+                lastUpdated: Date.now(),
+                isSync: true
+            };
+
+            window.db.collection("excavators").doc(targetId).set(unitData, { merge: true })
+                .then(() => {
+                    window.showToast(`✅ Berhasil menyimpan unit ${hull}!`, "success");
+                    window.closeSingleUnitModal();
+                })
+                .catch(err => {
+                    console.error("Error saving unit:", err);
+                    window.showToast(`Gagal menyimpan unit: ${err.message}`, "error");
+                });
+        };
+
+        window.deleteUnit = function(unitId) {
+            if (!confirm(`Apakah Anda yakin ingin menghapus unit ${unitId}?`)) return;
+            window.db.collection("excavators").doc(unitId).delete()
+                .then(() => {
+                    window.showToast(`✅ Berhasil menghapus unit ${unitId}`, "success");
+                })
+                .catch(err => {
+                    console.error("Error deleting unit:", err);
+                    window.showToast(`Gagal menghapus unit: ${err.message}`, "error");
+                });
+        };
+
+        window.cleanSn = function(str) {
+            if (!str) return '';
+            return String(str).replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+        };
+
+        window.sanitizeHull = function(str) {
+            if (!str) return '';
+            return String(str).toUpperCase().replace(/\s+/g, '').replace(/\./g, '').trim();
+        };
+
+        window.parseHmValue = function(val) {
+            if (val === undefined || val === null || val === '') return 0;
+            if (typeof val === 'number') return val;
+            let str = String(val).trim();
+            if (str.includes(',')) str = str.replace(',', '.');
+            str = str.replace(/[^0-9.]/g, '');
+            const num = parseFloat(str);
+            return isNaN(num) ? 0 : num;
+        };
+
+        window.SERVICE_PACKAGES = {
+            "PM 50": {
+                parts: [
+                    { pn: "600-211-1340", name: "Filter Oli Mesin (Engine Oil Filter)", qty: 1 },
+                    { pn: "600-311-3550", name: "Filter Solar (Fuel Filter)", qty: 1 }
+                ],
+                oils: "Oli Mesin 15W-40 (28 Liter)"
+            },
+            "PM 250": {
+                parts: [
+                    { pn: "600-211-1340", name: "Filter Oli Mesin", qty: 1 },
+                    { pn: "600-311-3550", name: "Filter Solar Utama", qty: 1 },
+                    { pn: "600-319-3610", name: "Pre-Filter Solar (Water Separator)", qty: 1 }
+                ],
+                oils: "Oli Mesin 15W-40 (28 Liter)"
+            },
+            "PM 500": {
+                parts: [
+                    { pn: "600-211-1340", name: "Filter Oli Mesin", qty: 1 },
+                    { pn: "600-311-3550", name: "Filter Solar Utama", qty: 1 },
+                    { pn: "600-319-3610", name: "Pre-Filter Solar", qty: 1 },
+                    { pn: "600-185-4100", name: "Filter Udara Luar (Outer Air Filter)", qty: 1 },
+                    { pn: "600-185-4200", name: "Filter Udara Dalam (Inner Air Filter)", qty: 1 },
+                    { pn: "07000-12010", name: "Filter Pilot Hidrolik", qty: 1 }
+                ],
+                oils: "Oli Mesin 15W-40 (28 L), Oli Swing Reduction (8 L)"
+            },
+            "PM 1000": {
+                parts: [
+                    { pn: "600-211-1340", name: "Filter Oli Mesin", qty: 1 },
+                    { pn: "600-311-3550", name: "Filter Solar Utama", qty: 1 },
+                    { pn: "600-319-3610", name: "Pre-Filter Solar", qty: 1 },
+                    { pn: "600-185-4100", name: "Filter Udara Set", qty: 2 },
+                    { pn: "207-60-71180", name: "Filter Return Hidrolik", qty: 1 },
+                    { pn: "207-60-71210", name: "Filter Suction Hidrolik", qty: 1 },
+                    { pn: "07000-12010", name: "Filter Pilot Hidrolik", qty: 1 }
+                ],
+                oils: "Oli Mesin (28 L), Oli Swing (8 L), Oli Final Drive L/R (24 L), Oli Transmisi (15 L)"
+            },
+            "PM 2000": {
+                parts: [
+                    { pn: "600-211-1340", name: "Filter Oli Mesin", qty: 1 },
+                    { pn: "600-311-3550", name: "Filter Solar Utama", qty: 2 },
+                    { pn: "600-319-3610", name: "Pre-Filter Solar", qty: 2 },
+                    { pn: "600-185-4100", name: "Filter Udara Full Set", qty: 2 },
+                    { pn: "207-60-71180", name: "Filter Return Hidrolik", qty: 1 },
+                    { pn: "207-60-71210", name: "Filter Suction Hidrolik", qty: 1 },
+                    { pn: "07000-12010", name: "Filter Pilot Hidrolik", qty: 1 },
+                    { pn: "20Y-60-21470", name: "Strainer Tangki Hidrolik", qty: 1 }
+                ],
+                oils: "Oli Mesin (28 L), Oli Hidrolik ISO VG 68 (240 L), Oli Swing (8 L), Oli Final Drive (24 L)"
+            }
+        };
+
+        window.recommendServiceTypeFromHM = function(hmVal) {
+            const val = Math.round(parseFloat(hmVal) || 0);
+            if (val <= 0) return "PM 500";
+            if (val % 2000 === 0) return "PM 2000";
+            if (val % 1000 === 0) return "PM 1000";
+            if (val % 500 === 0) return "PM 500";
+            if (val % 250 === 0) return "PM 250";
+            if (val % 50 === 0) return "PM 50";
+
+            const r2000 = val % 2000;
+            if (r2000 >= 1850 || r2000 <= 150) return "PM 2000";
+            const r1000 = val % 1000;
+            if (r1000 >= 850 || r1000 <= 150) return "PM 1000";
+            const r500 = val % 500;
+            if (r500 >= 400 || r500 <= 100) return "PM 500";
+
+            return "PM 500";
+        };
+    </script>
+    <style>
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: #0f172a; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #475569; }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans h-screen flex flex-col overflow-hidden selection:bg-amber-500 selection:text-slate-950">
+
+    <!-- Top Navigation Header -->
+    <header class="z-40 border-b border-slate-800 bg-slate-900/90 backdrop-blur-md px-6 py-3 flex items-center justify-between shadow-xl shrink-0 h-[61px]">
+        <div class="flex items-center space-x-4">
+            <a href="index.html" class="w-10 h-10 bg-amber-500 rounded-xl flex items-center justify-center text-slate-950 font-black text-lg hover:scale-105 transition-transform">
+                <i class="fa-solid fa-screwdriver-wrench"></i>
+            </a>
+            <div>
+                <h1 class="text-base font-extrabold text-white flex items-center gap-2">
+                    <span>ADMIN DESKTOP WEB PORTAL</span>
+                    <span class="px-2 py-0.5 text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-md font-bold">FULL CONTROL</span>
+                </h1>
+                <p class="text-xs text-slate-400">Maintenance Manajemen • Fast Real-time Sync</p>
+            </div>
+        </div>
+
+        <div class="flex items-center space-x-4">
+            <!-- Firebase Status -->
+            <div id="connectionStatus" class="flex items-center space-x-2 text-xs bg-slate-800/90 px-3 py-1.5 rounded-full border border-slate-700">
+                <span id="statusDot" class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span id="statusText" class="font-medium text-slate-300">Menghubungkan...</span>
+            </div>
+
+            <button onclick="window.cleanDuplicateUnitsFromFirestore()" class="px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-400 text-xs font-bold rounded-lg border border-amber-500/30 transition flex items-center gap-1.5" title="Bersihkan Dokumen Unit Duplikat di Firestore">
+                <i class="fa-solid fa-broom"></i>
+                <span>Bersihkan Duplikat</span>
+            </button>
+
+            <button onclick="window.refreshData()" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg border border-slate-700 transition flex items-center gap-1.5">
+                <i class="fa-solid fa-rotate-right"></i>
+                <span>Sync Data</span>
+            </button>
+
+            <a href="index.html" class="px-3 py-1.5 bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white text-xs font-semibold rounded-lg border border-red-500/30 transition flex items-center gap-1.5">
+                <i class="fa-solid fa-right-from-bracket"></i>
+                <span>Keluar Portal</span>
+            </a>
+        </div>
+    </header>
+
+    <!-- Main Workspace Layout -->
+    <div class="flex-grow flex overflow-hidden h-[calc(100vh-61px)]">
+
+        <!-- Sidebar Navigation -->
+        <aside class="w-64 border-r border-slate-800 bg-slate-900/60 p-4 flex flex-col justify-between shrink-0 overflow-y-auto custom-scrollbar h-full">
+            <nav class="space-y-1">
+                <p class="px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Navigasi Utama</p>
+
+                <button onclick="window.switchTab('dashboard')" id="nav-dashboard" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800/80 hover:text-white transition bg-amber-500/20 text-amber-400 font-bold">
+                    <i class="fa-solid fa-chart-pie w-4 text-amber-400 text-center"></i>
+                    <span>Dashboard & Area</span>
+                </button>
+
+                <button onclick="window.switchTab('orders')" id="nav-orders" class="nav-item w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800/80 hover:text-white transition">
+                    <div class="flex items-center gap-3">
+                        <i class="fa-solid fa-cart-shopping w-4 text-amber-400 text-center"></i>
+                        <span>Order Part Mekanik</span>
+                    </div>
+                    <span id="badge-orders-count" class="px-2 py-0.5 text-[10px] font-extrabold bg-amber-500 text-slate-950 rounded-full">0</span>
+                </button>
+
+                <p class="px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest pt-3 mb-2">Pengawasan Khusus</p>
+
+                <button onclick="window.switchTab('unassigned')" id="nav-unassigned" class="nav-item w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800/80 hover:text-white transition">
+                    <div class="flex items-center gap-3">
+                        <i class="fa-solid fa-user-xmark w-4 text-red-400 text-center"></i>
+                        <span>Unit Belum Ada Mekanik</span>
+                    </div>
+                    <span id="badge-unassigned-count" class="px-2 py-0.5 text-[10px] font-extrabold bg-red-600 text-white rounded-full">0</span>
+                </button>
+
+                <button onclick="window.switchTab('late-warranty')" id="nav-late-warranty" class="nav-item w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800/80 hover:text-white transition">
+                    <div class="flex items-center gap-3">
+                        <i class="fa-solid fa-calendar-xmark w-4 text-red-400 text-center"></i>
+                        <span>Garansi Telat (>30H)</span>
+                    </div>
+                    <span id="badge-late-warranty-count" class="px-2 py-0.5 text-[10px] font-extrabold bg-red-600 text-white rounded-full">0</span>
+                </button>
+
+                <button onclick="window.switchTab('due-hm')" id="nav-due-hm" class="nav-item w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800/80 hover:text-white transition">
+                    <div class="flex items-center gap-3">
+                        <i class="fa-solid fa-stopwatch w-4 text-amber-400 text-center"></i>
+                        <span>Jatuh Tempo HM Garansi</span>
+                    </div>
+                    <span id="badge-due-hm-count" class="px-2 py-0.5 text-[10px] font-extrabold bg-amber-500 text-slate-950 rounded-full">0</span>
+                </button>
+
+                <p class="px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest pt-3 mb-2">Master Data</p>
+
+                <button onclick="window.switchTab('fleet')" id="nav-fleet" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800/80 hover:text-white transition">
+                    <i class="fa-solid fa-truck-monster w-4 text-blue-400 text-center"></i>
+                    <span>Armada Unit & Fleet</span>
+                </button>
+
+                <button onclick="window.switchTab('parts')" id="nav-parts" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800/80 hover:text-white transition">
+                    <i class="fa-solid fa-boxes-packing w-4 text-teal-400 text-center"></i>
+                    <span>Stok Part Ready</span>
+                </button>
+
+                <button onclick="window.switchTab('users')" id="nav-users" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800/80 hover:text-white transition">
+                    <i class="fa-solid fa-users-gear w-4 text-purple-400 text-center"></i>
+                    <span>Manajemen User</span>
+                </button>
+
+                <button onclick="window.switchTab('history')" id="nav-history" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800/80 hover:text-white transition">
+                    <i class="fa-solid fa-clock-rotate-left w-4 text-indigo-400 text-center"></i>
+                    <span>Riwayat Servis</span>
+                </button>
+
+                <p class="px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest pt-3 mb-2">Master Excel</p>
+
+                <button onclick="window.switchTab('excel')" id="nav-excel" class="nav-item w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800/80 hover:text-white transition">
+                    <i class="fa-solid fa-file-excel w-4 text-emerald-400 text-center"></i>
+                    <span>Upload & Template</span>
+                </button>
+            </nav>
+
+            <div class="p-3 bg-slate-800/40 rounded-xl border border-slate-800 text-[11px] text-slate-400 mt-4">
+                <p class="font-bold text-slate-200">Mode Admin</p>
+                <p class="mt-0.5">Role: Full System Administrator</p>
+                <p>Sync: <span class="text-emerald-400 font-semibold">Fast Sync Active</span></p>
+            </div>
+        </aside>
+
+        <!-- Main Content Area -->
+        <main class="flex-grow p-6 overflow-y-auto custom-scrollbar bg-slate-950/80 h-full">
+
+            <div id="toast-container" class="fixed bottom-5 right-5 z-50 flex flex-col gap-2"></div>
+
+            <!-- TAB 1: DASHBOARD STATS -->
+            <section id="tab-dashboard" class="tab-content space-y-6">
+                <div>
+                    <h2 class="text-2xl font-extrabold text-white">Dashboard Statistik & Area</h2>
+                    <p class="text-xs text-slate-400">Ringkasan operasional armada, akumulasi servis bulan ini, dan ketersediaan part.</p>
+                </div>
+
+                <!-- Master Stats Grid -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex items-center justify-between">
+                        <div>
+                            <p class="text-xs text-slate-400 font-medium">Total Armada Unit</p>
+                            <h3 id="stat-total-fleet" class="text-3xl font-black text-white mt-1">0</h3>
+                        </div>
+                        <div class="w-12 h-12 bg-blue-500/10 text-blue-400 rounded-xl flex items-center justify-center text-xl">
+                            <i class="fa-solid fa-truck-monster"></i>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex items-center justify-between">
+                        <div>
+                            <p class="text-xs text-slate-400 font-medium">Garansi Jatuh Tempo HM</p>
+                            <h3 id="stat-due-service" class="text-3xl font-black text-amber-400 mt-1">0</h3>
+                        </div>
+                        <div class="w-12 h-12 bg-amber-500/10 text-amber-400 rounded-xl flex items-center justify-center text-xl">
+                            <i class="fa-solid fa-triangle-exclamation"></i>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex items-center justify-between">
+                        <div>
+                            <p class="text-xs text-slate-400 font-medium">Order Part Aktif</p>
+                            <h3 id="stat-active-orders" class="text-3xl font-black text-emerald-400 mt-1">0</h3>
+                        </div>
+                        <div class="w-12 h-12 bg-emerald-500/10 text-emerald-400 rounded-xl flex items-center justify-center text-xl">
+                            <i class="fa-solid fa-cart-shopping"></i>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl flex items-center justify-between">
+                        <div>
+                            <p class="text-xs text-slate-400 font-medium">Total User Terdaftar</p>
+                            <h3 id="stat-total-users" class="text-3xl font-black text-purple-400 mt-1">0</h3>
+                        </div>
+                        <div class="w-12 h-12 bg-purple-500/10 text-purple-400 rounded-xl flex items-center justify-center text-xl">
+                            <i class="fa-solid fa-users"></i>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Monthly & Area Stats Summary Card -->
+                <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl space-y-4 shadow-xl">
+                    <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                        <div class="flex items-center gap-2">
+                            <div class="w-8 h-8 bg-amber-500/20 text-amber-400 rounded-lg flex items-center justify-center">
+                                <i class="fa-solid fa-chart-column"></i>
+                            </div>
+                            <div>
+                                <h3 class="text-sm font-extrabold text-white">STATISTIK SERVIS BULAN INI & PART AREA</h3>
+                                <p class="text-[11px] text-slate-400">Total akumulasi unit selesai servis bulan ini vs unit menunggu part.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="bg-emerald-950/30 border border-emerald-500/30 p-4 rounded-xl text-center">
+                            <p class="text-xs font-bold text-emerald-400">✅ Selesai Servis Bulan Ini</p>
+                            <h4 id="stat-serviced-month-count" class="text-2xl font-black text-emerald-400 mt-1">0 Unit</h4>
+                        </div>
+                        <div class="bg-amber-950/30 border border-amber-500/30 p-4 rounded-xl text-center">
+                            <p class="text-xs font-bold text-amber-400">⏳ Menunggu Servis / Part</p>
+                            <h4 id="stat-waiting-service-count" class="text-2xl font-black text-amber-400 mt-1">0 Unit</h4>
+                        </div>
+                    </div>
+
+                    <!-- Breakdown Area Grid -->
+                    <div id="area-stats-container" class="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
+                        <!-- Injected via JS -->
+                    </div>
+
+                    <div class="border-t border-slate-800/80 pt-3 flex items-center justify-between text-xs font-extrabold">
+                        <span class="text-slate-400 uppercase">Total Ringkasan Seluruh Area:</span>
+                        <div class="flex items-center gap-4">
+                            <span id="stat-grand-ready" class="text-emerald-400">0 Unit Ready</span>
+                            <span id="stat-grand-waiting" class="text-amber-400">0 Unit Waiting</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 2: ORDER PART MEKANIK -->
+            <section id="tab-orders" class="tab-content hidden space-y-6">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div>
+                        <h2 class="text-2xl font-extrabold text-white">Manajemen Order Part Mekanik</h2>
+                        <p class="text-xs text-slate-400">Daftar pengajuan suku cadang dari mekanik untuk diproses status ketersediaannya.</p>
+                    </div>
+                    <input type="text" id="search-orders" oninput="window.scheduleRender()" placeholder="🔍 Cari order part / unit / mekanik..." class="px-3 py-2 bg-slate-900 border border-slate-800 text-white text-xs rounded-xl focus:outline-none focus:border-amber-500 w-64 shadow">
+                </div>
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+                    <div class="overflow-x-auto custom-scrollbar">
+                        <table class="w-full text-left text-xs">
+                            <thead class="bg-slate-950/80 text-slate-400 uppercase tracking-wider border-b border-slate-800 font-bold">
+                                <tr>
+                                    <th class="p-3">
+                                        <div>Kode Unit</div>
+                                        <input type="text" id="col-filter-orders-hull" oninput="window.scheduleRender()" placeholder="Filter Hull..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Serial Number</div>
+                                        <input type="text" id="col-filter-orders-sn" oninput="window.scheduleRender()" placeholder="Filter SN..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Tipe Servis</div>
+                                        <input type="text" id="col-filter-orders-type" oninput="window.scheduleRender()" placeholder="Filter Tipe..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Mekanik</div>
+                                        <input type="text" id="col-filter-orders-mech" oninput="window.scheduleRender()" placeholder="Filter Mekanik..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Status Order</div>
+                                        <select id="col-filter-orders-status" onchange="window.scheduleRender()" class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-slate-300 text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                            <option value="">Semua Status</option>
+                                            <option value="APPROVED">Disetujui</option>
+                                            <option value="WAITING_PARTS">Menunggu Part</option>
+                                            <option value="PARTS_ISSUED">Part Keluar</option>
+                                            <option value="READY_FOR_WORK">Siap Dikerjakan</option>
+                                        </select>
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Rincian Part</div>
+                                        <input type="text" id="col-filter-orders-parts" oninput="window.scheduleRender()" placeholder="Filter Part..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3 text-center">Aksi Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="orders-table-body" class="divide-y divide-slate-800/60 font-medium">
+                                <!-- Injected via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 3: UNASSIGNED UNITS -->
+            <section id="tab-unassigned" class="tab-content hidden space-y-6">
+                <div>
+                    <h2 class="text-2xl font-extrabold text-white">Unit Belum Ada Mekanik</h2>
+                    <p class="text-xs text-slate-400">Penugasan mekanik penanggung jawab untuk unit armada yang masih kosong.</p>
+                </div>
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+                    <div class="overflow-x-auto custom-scrollbar">
+                        <table class="w-full text-left text-xs">
+                            <thead class="bg-slate-950/80 text-slate-400 uppercase tracking-wider border-b border-slate-800 font-bold">
+                                <tr>
+                                    <th class="p-4">Kode Unit</th>
+                                    <th class="p-4">Serial Number</th>
+                                    <th class="p-4">Model</th>
+                                    <th class="p-4">HM</th>
+                                    <th class="p-4">Penugasan Mekanik</th>
+                                </tr>
+                            </thead>
+                            <tbody id="unassigned-units-table-body" class="divide-y divide-slate-800/60 font-medium">
+                                <!-- Injected via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 4: LATE WARRANTY (>30 DAYS) -->
+            <section id="tab-late-warranty" class="tab-content hidden space-y-6">
+                <div>
+                    <h2 class="text-2xl font-extrabold text-white">Garansi Telat (>30 Hari)</h2>
+                    <p class="text-xs text-slate-400">Daftar unit garansi yang melebihi 30 hari tanpa catatan servis.</p>
+                </div>
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+                    <div class="overflow-x-auto custom-scrollbar">
+                        <table class="w-full text-left text-xs">
+                            <thead class="bg-slate-950/80 text-slate-400 uppercase tracking-wider border-b border-slate-800 font-bold">
+                                <tr>
+                                    <th class="p-3">
+                                        <div>Kode Unit</div>
+                                        <input type="text" id="col-filter-late-hull" oninput="window.scheduleRender()" placeholder="Filter Hull..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Serial Number</div>
+                                        <input type="text" id="col-filter-late-sn" oninput="window.scheduleRender()" placeholder="Filter SN..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Model</div>
+                                        <input type="text" id="col-filter-late-model" oninput="window.scheduleRender()" placeholder="Filter Model..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>HM</div>
+                                        <input type="text" id="col-filter-late-hm" oninput="window.scheduleRender()" placeholder="Filter HM..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Tanggal Terakhir Service</div>
+                                        <input type="text" id="col-filter-late-date" oninput="window.scheduleRender()" placeholder="Filter Tgl..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>HM Service Terakhir</div>
+                                        <input type="text" id="col-filter-late-last-hm" oninput="window.scheduleRender()" placeholder="Filter HM Srv..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Type Service Terakhir</div>
+                                        <input type="text" id="col-filter-late-type" oninput="window.scheduleRender()" placeholder="Filter Type..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Keterlambatan</div>
+                                        <input type="text" id="col-filter-late-delay" oninput="window.scheduleRender()" placeholder="Filter Telat..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Mekanik Assigned</div>
+                                        <input type="text" id="col-filter-late-mech" oninput="window.scheduleRender()" placeholder="Filter Mekanik..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3 text-center"><div>Aksi</div></th>
+                                </tr>
+                            </thead>
+                            <tbody id="late-warranty-table-body" class="divide-y divide-slate-800/60 font-medium">
+                                <!-- Injected via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 5: DUE HM SERVICE -->
+            <section id="tab-due-hm" class="tab-content hidden space-y-6">
+                <div>
+                    <h2 class="text-2xl font-extrabold text-white">Jatuh Tempo HM Garansi</h2>
+                    <p class="text-xs text-slate-400">Daftar unit garansi yang mendekati target HM servis (sisa <= 100 HM).</p>
+                </div>
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+                    <div class="overflow-x-auto custom-scrollbar">
+                        <table class="w-full text-left text-xs">
+                            <thead class="bg-slate-950/80 text-slate-400 uppercase tracking-wider border-b border-slate-800 font-bold">
+                                <tr>
+                                    <th class="p-3">
+                                        <div>Kode Unit</div>
+                                        <input type="text" id="col-filter-due-hull" oninput="window.scheduleRender()" placeholder="Filter Hull..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Serial Number</div>
+                                        <input type="text" id="col-filter-due-sn" oninput="window.scheduleRender()" placeholder="Filter SN..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Model</div>
+                                        <input type="text" id="col-filter-due-model" oninput="window.scheduleRender()" placeholder="Filter Model..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>HM Aktual</div>
+                                        <input type="text" id="col-filter-due-hm" oninput="window.scheduleRender()" placeholder="Filter HM..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Target HM</div>
+                                        <input type="text" id="col-filter-due-target" oninput="window.scheduleRender()" placeholder="Filter Target..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Sisa HM</div>
+                                        <input type="text" id="col-filter-due-remaining" oninput="window.scheduleRender()" placeholder="Filter Sisa..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Tanggal Terakhir Service</div>
+                                        <input type="text" id="col-filter-due-date" oninput="window.scheduleRender()" placeholder="Filter Tgl..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>HM Service Terakhir</div>
+                                        <input type="text" id="col-filter-due-last-hm" oninput="window.scheduleRender()" placeholder="Filter HM Srv..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Type Service Terakhir</div>
+                                        <input type="text" id="col-filter-due-type" oninput="window.scheduleRender()" placeholder="Filter Type..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Mekanik Assigned</div>
+                                        <input type="text" id="col-filter-due-mech" oninput="window.scheduleRender()" placeholder="Filter Mekanik..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3 text-center"><div>Aksi</div></th>
+                                </tr>
+                            </thead>
+                            <tbody id="due-hm-table-body" class="divide-y divide-slate-800/60 font-medium">
+                                <!-- Injected via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 6: FLEET -->
+            <section id="tab-fleet" class="tab-content hidden space-y-6">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div>
+                        <h2 class="text-2xl font-extrabold text-white">Manajemen Armada & Fleet</h2>
+                        <p class="text-xs text-slate-400">Seluruh unit excavator, HM, lokasi peta GPS, dan penugasan mekanik.</p>
+                    </div>
+                    <div class="flex items-center space-x-3">
+                        <input type="text" id="search-fleet" oninput="window.scheduleRender()" placeholder="🔍 Cari armada unit / SN / mekanik..." class="px-3 py-2 bg-slate-900 border border-slate-800 text-white text-xs rounded-xl focus:outline-none focus:border-amber-500 w-64 shadow">
+                        <button onclick="window.openSingleUnitModal()" class="px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-black rounded-xl shadow flex items-center gap-1.5 transition cursor-pointer">
+                            <i class="fa-solid fa-plus text-sm"></i>
+                            <span>Tambah Unit Satuan</span>
+                        </button>
+                        <button onclick="window.exportFleetExcel()" class="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black rounded-xl shadow flex items-center gap-1.5 transition cursor-pointer">
+                            <i class="fa-solid fa-file-excel text-sm"></i>
+                            <span>Download Excel SANY</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+                    <div class="overflow-x-auto custom-scrollbar">
+                        <table class="w-full text-left text-xs">
+                            <thead class="bg-slate-950/80 text-slate-400 uppercase tracking-wider border-b border-slate-800 font-bold">
+                                <tr>
+                                    <th class="p-3">
+                                        <div>Kode Unit</div>
+                                        <input type="text" id="col-filter-fleet-hull" oninput="window.scheduleRender()" placeholder="Filter Hull..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Serial Number</div>
+                                        <input type="text" id="col-filter-fleet-sn" oninput="window.scheduleRender()" placeholder="Filter SN..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Model</div>
+                                        <input type="text" id="col-filter-fleet-model" oninput="window.scheduleRender()" placeholder="Filter Model..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3"><div>HM</div></th>
+                                    <th class="p-3">
+                                        <div>Target HM</div>
+                                        <input type="text" id="col-filter-fleet-target-hm" oninput="window.scheduleRender()" placeholder="Target..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3"><div>Tgl Update HM</div></th>
+                                    <th class="p-3">
+                                        <div>Status Garansi</div>
+                                        <select id="col-filter-fleet-warr" onchange="window.scheduleRender()" class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-slate-300 text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                            <option value="">Semua</option>
+                                            <option value="GARANSI AKTIF">Garansi Aktif</option>
+                                            <option value="OUT WARRANTY">Out Warranty</option>
+                                        </select>
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Penanganan Warranty</div>
+                                        <select id="col-filter-fleet-handling" onchange="window.scheduleRender()" class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-slate-300 text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                            <option value="">Semua</option>
+                                            <option value="INTERNAL">Internal</option>
+                                            <option value="CUSTOMER_DIRECT">Customer Direct</option>
+                                        </select>
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Mekanik Assigned</div>
+                                        <input type="text" id="col-filter-fleet-mechanic" oninput="window.scheduleRender()" placeholder="Filter Mekanik..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-amber-500">
+                                    </th>
+                                    <th class="p-3 text-center">Opsi</th>
+                                </tr>
+                            </thead>
+                            <tbody id="fleet-table-body" class="divide-y divide-slate-800/60 font-medium">
+                                <!-- Injected via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 7: READY PARTS -->
+            <section id="tab-parts" class="tab-content hidden space-y-6">
+                <div>
+                    <h2 class="text-2xl font-extrabold text-white">Stok Part Ready Area</h2>
+                    <p class="text-xs text-slate-400">Daftar suku cadang yang sudah disiapkan untuk dikerjakan per area.</p>
+                </div>
+                <div id="ready-parts-container" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <!-- Injected via JS -->
+                </div>
+            </section>
+
+            <!-- TAB 8: USERS -->
+            <section id="tab-users" class="tab-content hidden space-y-6">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div>
+                        <h2 class="text-2xl font-extrabold text-white">Manajemen User & Mekanik</h2>
+                        <p class="text-xs text-slate-400">Kelola akun pengguna, peran, dan penugasan area mekanik.</p>
+                    </div>
+                    <div class="flex items-center space-x-3">
+                        <input type="text" id="search-users" oninput="window.scheduleRender()" placeholder="🔍 Cari username / role / area..." class="px-3 py-2 bg-slate-900 border border-slate-800 text-white text-xs rounded-xl focus:outline-none focus:border-purple-500 w-64 shadow">
+                        <button onclick="window.openAddUserModal()" class="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black rounded-xl shadow flex items-center gap-1.5 transition cursor-pointer">
+                            <i class="fa-solid fa-user-plus text-sm"></i>
+                            <span>Tambah User Baru</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+                    <div class="overflow-x-auto custom-scrollbar">
+                        <table class="w-full text-left text-xs">
+                            <thead class="bg-slate-950/80 text-slate-400 uppercase tracking-wider border-b border-slate-800 font-bold">
+                                <tr>
+                                    <th class="p-3">
+                                        <div>Username</div>
+                                        <input type="text" id="col-filter-users-name" oninput="window.scheduleRender()" placeholder="Filter User..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-purple-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Role</div>
+                                        <select id="col-filter-users-role" onchange="window.scheduleRender()" class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-slate-300 text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-purple-500">
+                                            <option value="">Semua Role</option>
+                                            <option value="MECHANIC">MECHANIC</option>
+                                            <option value="PIC_AREA">PIC AREA</option>
+                                            <option value="SUPERVISOR">SUPERVISOR</option>
+                                            <option value="ADMIN">ADMIN</option>
+                                        </select>
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Area Tugas</div>
+                                        <select id="col-filter-users-area" onchange="window.scheduleRender()" class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-slate-300 text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-purple-500">
+                                            <option value="">Semua Area</option>
+                                            <option value="Smelter">Smelter</option>
+                                            <option value="EOS">EOS</option>
+                                            <option value="KM15">KM15</option>
+                                        </select>
+                                    </th>
+                                    <th class="p-3 text-center">Aksi</th>
+                                </tr>
+                            </thead>
+                            <tbody id="users-table-body" class="divide-y divide-slate-800/60 font-medium">
+                                <!-- Injected via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 9: HISTORY -->
+            <section id="tab-history" class="tab-content hidden space-y-6">
+                <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div>
+                        <h2 class="text-2xl font-extrabold text-white">Riwayat Perawatan & Servis</h2>
+                        <p class="text-xs text-slate-400">Arsip histori lengkap hasil pekerjaan servis unit.</p>
+                    </div>
+                    <div class="flex items-center space-x-3">
+                        <input type="text" id="search-history" oninput="window.scheduleRender()" placeholder="🔍 Cari riwayat unit / mekanik / part..." class="px-3 py-2 bg-slate-900 border border-slate-800 text-white text-xs rounded-xl focus:outline-none focus:border-indigo-500 w-64 shadow">
+                        <button onclick="window.deleteTodayExcelHistory()" class="px-3.5 py-2 bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white text-xs font-black rounded-xl border border-red-500/30 transition flex items-center gap-1.5 cursor-pointer" title="Hapus riwayat impor Excel hari ini saja (data mekanik tetap aman)">
+                            <i class="fa-solid fa-trash-can"></i>
+                            <span>Hapus Impor Excel Hari Ini</span>
+                        </button>
+                    </div>
+                </div>
+                <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
+                    <div class="overflow-x-auto custom-scrollbar">
+                        <table class="w-full text-left text-xs">
+                            <thead class="bg-slate-950/80 text-slate-400 uppercase tracking-wider border-b border-slate-800 font-bold">
+                                <tr>
+                                    <th class="p-3">
+                                        <div>Kode Unit</div>
+                                        <input type="text" id="col-filter-history-hull" oninput="window.scheduleRender()" placeholder="Filter Hull..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-indigo-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Serial Number</div>
+                                        <input type="text" id="col-filter-history-sn" oninput="window.scheduleRender()" placeholder="Filter SN..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-indigo-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Tipe Servis</div>
+                                        <input type="text" id="col-filter-history-type" oninput="window.scheduleRender()" placeholder="Filter Servis..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-indigo-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>HM Servis</div>
+                                        <input type="text" id="col-filter-history-hm" oninput="window.scheduleRender()" placeholder="Filter HM..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-indigo-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Mekanik</div>
+                                        <input type="text" id="col-filter-history-mech" oninput="window.scheduleRender()" placeholder="Filter Mekanik..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-indigo-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Tanggal Servis</div>
+                                        <input type="text" id="col-filter-history-date" oninput="window.scheduleRender()" placeholder="Filter Tgl..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-indigo-500">
+                                    </th>
+                                    <th class="p-3">
+                                        <div>Part Terpakai</div>
+                                        <input type="text" id="col-filter-history-parts" oninput="window.scheduleRender()" placeholder="Filter Part..." class="mt-1.5 w-full bg-slate-900 border border-slate-800 text-white text-[11px] rounded-lg px-2 py-1 font-normal normal-case focus:outline-none focus:border-indigo-500">
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody id="history-table-body" class="divide-y divide-slate-800/60 font-medium">
+                                <!-- Injected via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 10: EXCEL -->
+            <section id="tab-excel" class="tab-content hidden space-y-6">
+                <div>
+                    <h2 class="text-2xl font-extrabold text-white">Master Impor & Template Excel</h2>
+                    <p class="text-xs text-slate-400">Unggah file Excel master data atau unduh template resmi SANY.</p>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-3">
+                        <h3 class="text-sm font-extrabold text-white flex items-center gap-2">
+                            <i class="fa-solid fa-file-import text-blue-400"></i>
+                            <span>Upload Master Populasi Unit (SANY 13 Kolom)</span>
+                        </h3>
+                        <p class="text-xs text-slate-400">Impor data populasi unit baru dari file Excel.</p>
+                        <input type="file" id="file-unit" accept=".xlsx, .xls" class="hidden" onchange="window.handleExcelUpload(event, 'unit')">
+                        <div class="flex gap-2">
+                            <button onclick="document.getElementById('file-unit').click()" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl shadow">Pilih File Unit (.xlsx)</button>
+                            <button onclick="window.exportPopulasiTemplateExcel()" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl border border-slate-700">📄 Template Unit</button>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-3">
+                        <h3 class="text-sm font-extrabold text-white flex items-center gap-2">
+                            <i class="fa-solid fa-clock-rotate-left text-amber-400"></i>
+                            <span>Upload Update HM Harian & GPS (SANY 7 Kolom)</span>
+                        </h3>
+                        <p class="text-xs text-slate-400">Impor update HM dan koordinat GPS dari file Excel.</p>
+                        <input type="file" id="file-hm" accept=".xlsx, .xls" class="hidden" onchange="window.handleExcelUpload(event, 'hm')">
+                        <div class="flex gap-2">
+                            <button onclick="document.getElementById('file-hm').click()" class="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-xl shadow">Pilih File HM (.xlsx)</button>
+                            <button onclick="window.exportServiceHistoryTemplateExcel()" class="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl border border-slate-700">📄 Template Riwayat</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <!-- SYSTEM INFORMATION POPUP MODAL -->
+    <div id="modal-system-info" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-md w-full space-y-4 shadow-2xl text-center">
+            <h3 id="sys-info-title" class="text-lg font-extrabold text-white">System Information</h3>
+            <p id="sys-info-msg" class="text-sm text-slate-300 py-2 font-medium"></p>
+            <button onclick="window.closeSystemInfoModal()" class="w-full py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs rounded-xl shadow-lg">OK</button>
+        </div>
+    </div>
+
+    <!-- SINGLE UNIT EDIT/ADD MODAL -->
+    <div id="modal-single-unit" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 max-w-lg w-full space-y-4 shadow-2xl">
+            <h3 id="single-unit-modal-title" class="text-lg font-extrabold text-white flex items-center gap-2">
+                <i class="fa-solid fa-truck-monster text-blue-500"></i>
+                <span>Tambah / Edit Unit Satuan</span>
+            </h3>
+
+            <input type="hidden" id="single-unit-doc-id">
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div>
+                    <label class="font-bold text-slate-300">Kode Unit / Lambung</label>
+                    <input type="text" id="single-unit-hull" placeholder="misal: E999" class="w-full mt-1 bg-slate-950 border border-slate-800 text-white text-xs rounded-xl p-3 focus:outline-none focus:border-blue-500 font-bold uppercase">
+                </div>
+                <div>
+                    <label class="font-bold text-slate-300">Brand (Merk)</label>
+                    <input type="text" id="single-unit-brand" value="SANY" class="w-full mt-1 bg-slate-950 border border-slate-800 text-white text-xs rounded-xl p-3 focus:outline-none focus:border-blue-500 font-bold">
+                </div>
+                <div>
+                    <label class="font-bold text-slate-300">Model / Tipe Unit</label>
+                    <input type="text" id="single-unit-model" value="SY215C" class="w-full mt-1 bg-slate-950 border border-slate-800 text-white text-xs rounded-xl p-3 focus:outline-none focus:border-blue-500 font-bold">
+                </div>
+                <div>
+                    <label class="font-bold text-slate-300">Serial Number (SN)</label>
+                    <input type="text" id="single-unit-sn" placeholder="SY021..." class="w-full mt-1 bg-slate-950 border border-slate-800 text-white text-xs rounded-xl p-3 focus:outline-none focus:border-blue-500 font-mono">
+                </div>
+                <div>
+                    <label class="font-bold text-slate-300">Nama Customer / PIC</label>
+                    <input type="text" id="single-unit-customer" placeholder="Nama Contact PIC" class="w-full mt-1 bg-slate-950 border border-slate-800 text-white text-xs rounded-xl p-3 focus:outline-none focus:border-blue-500 font-semibold">
+                </div>
+                <div>
+                    <label class="font-bold text-slate-300">Nama Perusahaan</label>
+                    <input type="text" id="single-unit-company" placeholder="PT..." class="w-full mt-1 bg-slate-950 border border-slate-800 text-white text-xs rounded-xl p-3 focus:outline-none focus:border-blue-500">
+                </div>
+                <div>
+                    <label class="font-bold text-slate-300">No. Telepon Customer</label>
+                    <input type="text" id="single-unit-phone" placeholder="0812..." class="w-full mt-1 bg-slate-950 border border-slate-800 text-white text-xs rounded-xl p-3 focus:outline-none focus:border-blue-500 font-mono">
+                </div>
+                <div>
+                    <label class="font-bold text-slate-300">Tanggal Garansi Berakhir</label>
+                    <input type="text" id="single-unit-warranty-date" value="01/01/2028" class="w-full mt-1 bg-slate-950 border border-slate-800 text-white text-xs rounded-xl p-3 focus:outline-none focus:border-blue-500 font-mono">
+                </div>
+                <div>
+                    <label class="font-bold text-slate-300">Actual HM Awal</label>
+                    <input type="number" step="0.1" id="single-unit-hm" value="0" class="w-full mt-1 bg-slate-950 border border-slate-800 text-white text-xs rounded-xl p-3 focus:outline-none focus:border-blue-500 font-bold">
+                </div>
+                <div>
+                    <label class="font-bold text-slate-300">Penanganan Warranty</label>
+                    <select id="single-unit-handling" class="w-full mt-1 bg-slate-950 border border-slate-800 text-white text-xs rounded-xl p-3 focus:outline-none focus:border-blue-500 font-bold">
+                        <option value="INTERNAL">🔵 INTERNAL (Servis Tim)</option>
+                        <option value="CUSTOMER_DIRECT">🟣 CUSTOMER DIRECT</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="flex justify-end space-x-3 pt-2 border-t border-slate-800">
+                <button onclick="window.closeSingleUnitModal()" class="px-4 py-2 bg-slate-800 text-slate-300 font-semibold text-xs rounded-xl hover:bg-slate-700">Batal</button>
+                <button onclick="window.submitSingleUnit()" class="px-4.5 py-2 bg-blue-600 text-white font-extrabold text-xs rounded-xl shadow-lg shadow-blue-600/20 hover:bg-blue-500">💾 SIMPAN UNIT</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application Script -->
+    <script>
+        var renderScheduled = false;
+
+        window.dbState = { orders: [], excavators: [], users: [], history: [] };
+        window.currentPartsAreaFilter = 'Semua Area';
+
+        window.showToast = function(message, type = 'info') {
+            const container = document.getElementById('toast-container');
+            if(!container) return;
+            const toast = document.createElement('div');
+            const bg = type === 'success' ? 'bg-emerald-600' : type === 'error' ? 'bg-red-600' : 'bg-slate-800';
+            toast.className = `${bg} text-white px-4 py-2.5 rounded-xl shadow-2xl text-xs font-bold flex items-center space-x-2 transition-all duration-300 opacity-0 translate-y-2`;
+            toast.innerHTML = `<i class="fa-solid ${type === 'success' ? 'fa-circle-check' : 'fa-info-circle'}"></i><span>${message}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => { toast.classList.remove('opacity-0', 'translate-y-2'); }, 10);
+            setTimeout(() => { toast.classList.add('opacity-0'); setTimeout(() => toast.remove(), 300); }, 3000);
+        };
+
+        window.scheduleRender = function() {
+            if (renderScheduled) return;
+            renderScheduled = true;
+            requestAnimationFrame(() => {
+                try { window.renderDashboardStats(); } catch(e) { console.error("renderDashboardStats error:", e); }
+                try { window.renderOrdersTable(); } catch(e) { console.error("renderOrdersTable error:", e); }
+                try { window.renderUnassignedUnitsTable(); } catch(e) { console.error("renderUnassignedUnitsTable error:", e); }
+                try { window.renderLateWarrantyTable(); } catch(e) { console.error("renderLateWarrantyTable error:", e); }
+                try { window.renderDueHMTable(); } catch(e) { console.error("renderDueHMTable error:", e); }
+                try { window.renderFleetTable(); } catch(e) { console.error("renderFleetTable error:", e); }
+                try { window.renderReadyParts(); } catch(e) { console.error("renderReadyParts error:", e); }
+                try { window.renderUsersTable(); } catch(e) { console.error("renderUsersTable error:", e); }
+                try { window.renderHistoryTable(); } catch(e) { console.error("renderHistoryTable error:", e); }
+                try { if (window.updateLastSyncStatus) window.updateLastSyncStatus(); } catch(e) {}
+                renderScheduled = false;
+            });
+        };
+
+        window.showSystemInfoModal = function(title, message) {
+            document.getElementById('sys-info-title').innerText = title;
+            document.getElementById('sys-info-msg').innerText = message;
+            document.getElementById('modal-system-info').classList.remove('hidden');
+        };
+
+        window.closeSystemInfoModal = function() {
+            document.getElementById('modal-system-info').classList.add('hidden');
+        };
+
+        window.handleExcelUpload = function(event, type) {
+            const file = event.target.files[0];
+            if(!file) return;
+
+            window.showToast(`Membaca file ${file.name}...`, "info");
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const data = new Uint8Array(e.target.result);
+                    const workbook = XLSX.read(data, { type: 'array' });
+                    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+                    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+
+                    if (!rows || rows.length === 0) {
+                        window.showSystemInfoModal("System Information", "GAGAL: File Excel kosong atau tidak dapat dibaca.");
+                        return;
+                    }
+
+                    let headerRowIndex = -1;
+                    for (let r = 0; r < Math.min(15, rows.length); r++) {
+                        const rowArr = rows[r] || [];
+                        const rowText = rowArr.map(c => String(c || '').toLowerCase()).join(' ');
+                        if (rowText.includes('serial number') || rowText.includes('sn') || rowText.includes('主机编号') || rowText.includes('kode unit') || rowText.includes('chassisid') || rowText.includes('园区厂号') || rowText.includes('total work hours') || rowText.includes('work hour') || rowText.includes('updatetime') || rowText.includes('tipe unit') || rowText.includes('equipment list')) {
+                            headerRowIndex = r;
+                            break;
+                        }
+                    }
+
+                    if (headerRowIndex < 0) headerRowIndex = 0;
+                    const headerRow = rows[headerRowIndex] || [];
+
+                    function getColIndex(keywords, defaultCol = -1) {
+                        for (let c = 0; c < headerRow.length; c++) {
+                            const cellStr = String(headerRow[c] || '').toLowerCase().trim();
+                            for (const kw of keywords) {
+                                if (cellStr.includes(kw.toLowerCase())) return c;
+                            }
+                        }
+                        return defaultCol;
+                    }
+
+                    const idxSn = getColIndex(['serial number', 'serialno', 'sn unit', 'sn', '主机编号'], 3);
+                    const idxHull = getColIndex(['kode unit', 'chassisid', 'hull number', 'no lambung', 'lambung', 'hull', 'plant no', '园区厂号'], 1);
+                    const idxHm = getColIndex(['total work hours', 'work hours', 'working hours', 'jam kerja', 'hm aktual', 'hm terakhir', 'total hours', 'hm'], 4);
+                    const idxDate = getColIndex(['updatetime', 'update time', 'tanggal update', 'tgl update', 'arrival date', 'tanggal'], 3);
+                    const idxLat = getColIndex(['garis lintang', 'latitude', 'lat'], 5);
+                    const idxLng = getColIndex(['garis bujur', 'longitude', 'lng', 'long'], 6);
+                    const idxModel = getColIndex(['equipment list', 'tipe unit', 'model', 'tipe', '设备清单'], 2);
+                    const idxCustomer = getColIndex(['customer name', 'nama customer', 'customer', '客户姓名'], 4);
+                    const idxCompany = getColIndex(['nama perusahaan', 'perusahaan', 'company', '合同号'], 6);
+                    const idxEngineSn = getColIndex(['engine serial', 'no mesin', 'mesin', '发动机铭牌'], 9);
+                    const idxFrameSn = getColIndex(['frame serial', 'no rangka', 'rangka', 'no chasis', '车架号'], 11);
+                    const idxWarrantyEnd = getColIndex(['out of date', '质保到期', 'warranty end date', 'tgl garansi'], 6);
+                    const idxWarrantyStatus = getColIndex(['out of warranty', '是否出保', 'status warranty'], 8);
+
+                    const fleet = window.dbState.excavators || [];
+                    let count = 0;
+
+                    for (let r = headerRowIndex + 1; r < rows.length; r++) {
+                        const rowArr = rows[r] || [];
+                        let rawSn = idxSn >= 0 ? String(rowArr[idxSn] || '').trim() : '';
+                        let rawHull = idxHull >= 0 ? String(rowArr[idxHull] || '').trim() : '';
+
+                        if (!rawSn && !rawHull) {
+                            for (let c = 0; c < Math.min(rowArr.length, 6); c++) {
+                                const val = String(rowArr[c] || '').trim();
+                                if (val.length >= 3 && !val.startsWith('$') && !val.startsWith('#') && val.toLowerCase() !== 'sn' && val.toLowerCase() !== 'kode unit') {
+                                    rawHull = val;
+                                    break;
+                                }
+                            }
+                        }
+
+                        const cSn = window.cleanSn(rawSn);
+                        const cHull = window.sanitizeHull(rawHull);
+
+                        if ((!cSn && !cHull) || rawSn.startsWith('$') || rawHull.startsWith('$') || rawSn === 'RealData' || rawHull === 'RealData') continue;
+
+                        const rawHmVal = idxHm >= 0 ? rowArr[idxHm] : '';
+                        const hm = window.parseHmValue(rawHmVal);
+
+                        let updateTime = idxDate >= 0 ? String(rowArr[idxDate] || '').trim() : '';
+                        if (!updateTime) updateTime = new Date().toLocaleDateString('id-ID');
+
+                        let rawLat = idxLat >= 0 ? String(rowArr[idxLat] || '').trim() : '';
+                        if (rawLat.includes(',')) rawLat = rawLat.replace(',', '.');
+                        const lat = parseFloat(rawLat);
+
+                        let rawLng = idxLng >= 0 ? String(rowArr[idxLng] || '').trim() : '';
+                        if (rawLng.includes(',')) rawLng = rawLng.replace(',', '.');
+                        const lng = parseFloat(rawLng);
+
+                        const matchedUnit = fleet.find(u => {
+                            const uSn = window.cleanSn(u.serialNumber);
+                            const uHull = window.sanitizeHull(u.hullNumber);
+
+                            if (cSn && uSn && uSn === cSn) return true;
+                            if (cSn && uHull && uHull === cSn) return true;
+                            if (cHull && uHull && uHull === cHull) return true;
+                            if (cHull && uSn && uSn === cHull) return true;
+                            return false;
+                        });
+
+                        const targetDocId = matchedUnit ? matchedUnit.id : (cHull || rawHull || cSn || rawSn);
+                        if (!targetDocId) continue;
+
+                        count++;
+
+                        if (type === 'hm') {
+                            const existingHM = matchedUnit ? (matchedUnit.currentHM || 0) : 0;
+                            const finalHM = hm > 0 ? hm : existingHM;
+                            const updateData = {
+                                currentHM: finalHM,
+                                nextServiceTargetHM: finalHM > 0 ? (Math.floor(finalHM / 500) + 1) * 500 : 500,
+                                lastHMUpdateDate: updateTime,
+                                lastUpdated: Date.now(),
+                                isSync: true
+                            };
+                            if (rawSn && (!matchedUnit || !matchedUnit.serialNumber || matchedUnit.serialNumber === '-')) updateData.serialNumber = rawSn;
+                            if (rawHull && (!matchedUnit || !matchedUnit.hullNumber || matchedUnit.hullNumber === '-')) updateData.hullNumber = rawHull;
+                            if (!isNaN(lat) && lat !== 0) updateData.lastLatitude = lat;
+                            if (!isNaN(lng) && lng !== 0) updateData.lastLongitude = lng;
+
+                            window.db.collection("excavators").doc(targetDocId).set(updateData, { merge: true });
+
+                        } else if (type === 'unit') {
+                            const existingHM = matchedUnit ? (matchedUnit.currentHM || 0) : 0;
+                            const finalHM = hm > 0 ? hm : existingHM;
+
+                            const model = (idxModel >= 0 ? String(rowArr[idxModel] || '') : '').trim() || 'EXCAVATOR';
+                            const customer = idxCustomer >= 0 ? String(rowArr[idxCustomer] || '').trim() : '';
+                            const company = idxCompany >= 0 ? String(rowArr[idxCompany] || '').trim() : '';
+                            const engineSn = idxEngineSn >= 0 ? String(rowArr[idxEngineSn] || '').trim() : '';
+                            const frameSn = idxFrameSn >= 0 ? String(rowArr[idxFrameSn] || '').trim() : '';
+                            const warrEnd = idxWarrantyEnd >= 0 ? String(rowArr[idxWarrantyEnd] || '').trim() : '';
+                            const rawWarrStatus = idxWarrantyStatus >= 0 ? String(rowArr[idxWarrantyStatus] || '').trim() : '';
+                            const warrStatus = rawWarrStatus.toLowerCase().includes('yes') ? 'Out Warranty' : 'Garansi Aktif';
+
+                            const newUnitData = {
+                                hullNumber: rawHull || cHull || matchedUnit?.hullNumber || targetDocId,
+                                serialNumber: rawSn || matchedUnit?.serialNumber || '-',
+                                brand: 'SANY',
+                                model: model,
+                                companyName: company,
+                                engineSerialNumber: engineSn,
+                                frameSerialNumber: frameSn,
+                                warrantyEndDate: warrEnd,
+                                warrantyStatus: warrStatus,
+                                warrantyHandlingType: matchedUnit?.warrantyHandlingType || 'INTERNAL',
+                                customerName: customer,
+                                currentHM: finalHM,
+                                nextServiceTargetHM: finalHM > 0 ? (Math.floor(finalHM / 500) + 1) * 500 : 500,
+                                lastHMUpdateDate: updateTime,
+                                lastUpdated: Date.now(),
+                                isSync: true
+                            };
+                            if (!isNaN(lat) && lat !== 0) newUnitData.lastLatitude = lat;
+                            if (!isNaN(lng) && lng !== 0) newUnitData.lastLongitude = lng;
+
+                            window.db.collection("excavators").doc(targetDocId).set(newUnitData, { merge: true });
+                        }
+                    }
+
+                    const typeName = type === 'hm' ? 'Update HM' : 'Populasi Unit';
+                    window.showSystemInfoModal("System Information", `SUKSES: Berhasil mengimpor & memperbarui ${count} data ${typeName}!`);
+                    if (window.refreshData) setTimeout(window.refreshData, 800);
+
+                } catch (err) {
+                    window.showSystemInfoModal("System Information", `GAGAL: ${err.message}`);
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        };
+
+        window.cleanDuplicateUnitsFromFirestore = function() {
+            if (!window.db) return;
+            window.showToast("Memindai unit duplikat di Firestore...", "info");
+            window.db.collection("excavators").get().then(snap => {
+                const seenMap = new Map();
+                const docsToDelete = [];
+
+                snap.docs.forEach(doc => {
+                    const data = doc.data() || {};
+                    const cleanHull = window.sanitizeHull(data.hullNumber || doc.id || '');
+
+                    if (!cleanHull || cleanHull === 'SANY-' || cleanHull.startsWith('$') || cleanHull === 'REALDATA') {
+                        docsToDelete.push(doc.id);
+                        return;
+                    }
+
+                    if (seenMap.has(cleanHull)) {
+                        docsToDelete.push(doc.id);
+                    } else {
+                        seenMap.set(cleanHull, doc.id);
+                    }
+                });
+
+                if (docsToDelete.length > 0) {
+                    window.showToast(`Menghapus ${docsToDelete.length} dokumen duplikat dari Firestore...`, "info");
+                    const batch = window.db.batch();
+                    docsToDelete.forEach(id => {
+                        batch.delete(window.db.collection("excavators").doc(id));
+                    });
+                    batch.commit().then(() => {
+                        window.showToast(`✅ Berhasil membersihkan ${docsToDelete.length} unit duplikat!`, "success");
+                        if (window.refreshData) window.refreshData();
+                    });
+                } else {
+                    window.showToast("Database Firestore sudah bersih, tidak ada duplikat.", "success");
+                }
+            }).catch(err => {
+                window.showToast("Gagal membersihkan duplikat: " + err.message, "error");
+            });
+        };
+
+        window.deleteTodayExcelHistory = function() {
+            if (confirm("Apakah Anda yakin ingin menghapus seluruh riwayat hasil impor Excel khusus hari ini (17/10/2026) saja? Data riwayat mekanik tetap aman.")) {
+                window.showToast("Memindai dan menghapus riwayat Excel hari ini...", "info");
+
+                const now = new Date();
+                now.setHours(0,0,0,0);
+                const todayStart = now.getTime();
+                now.setHours(23,59,59,999);
+                const todayEnd = now.getTime();
+
+                window.db.collection("service_history").where("source", "==", "EXCEL").get().then(snap => {
+                    const docsToDelete = [];
+                    snap.docs.forEach(doc => {
+                        const data = doc.data() || {};
+                        const recDate = data.date || data.timestamp || 0;
+                        if (recDate >= todayStart && recDate <= todayEnd) {
+                            docsToDelete.push(doc.id);
+                        }
+                    });
+
+                    if (docsToDelete.length > 0) {
+                        const batch = window.db.batch();
+                        docsToDelete.forEach(id => batch.delete(window.db.collection("service_history").doc(id)));
+                        batch.commit().then(() => {
+                            window.showToast(`✅ Berhasil menghapus ${docsToDelete.length} riwayat impor Excel hari ini!`, "success");
+                            if (window.refreshData) window.refreshData();
+                        });
+                    } else {
+                        window.showToast("Tidak ditemukan riwayat impor Excel bertanggal hari ini.", "info");
+                    }
+                }).catch(err => {
+                    window.showToast("Gagal menghapus: " + err.message, "error");
+                });
+            }
+        };
+
+        function initFirebase() {
+            window.dbState = { orders: [], excavators: [], users: [], history: [] };
+
+            const firebaseConfig = {
+                apiKey: "AIzaSyAKj-17KtWr3yxOAdWb8zDe2s5_-REcHt8",
+                projectId: "maintenance-manajemen",
+                storageBucket: "maintenance-manajemen.firebasestorage.app",
+                appId: "1:383541269848:android:2a19e4796e320bed25c12d"
+            };
+
+            if (!firebase.apps.length) {
+                firebase.initializeApp(firebaseConfig);
+            }
+
+            window.db = firebase.firestore();
+
+            try {
+                window.db.enablePersistence({ synchronizeTabs: true }).catch(function(err) {
+                    console.log("Persistence info:", err.code);
+                });
+            } catch (e) {}
+
+            window.updateLastSyncStatus = function() {
+                const statusDot = document.getElementById('statusDot');
+                const statusText = document.getElementById('statusText');
+                const timeStr = new Date().toLocaleTimeString('id-ID');
+                if (statusDot) statusDot.className = "w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse";
+                if (statusText) statusText.innerText = `Firebase Terhubung • Terakhir Sync: ${timeStr}`;
+            };
+
+            window.updateLastSyncStatus();
+
+            setTimeout(() => {
+                if (window.refreshData) window.refreshData();
+            }, 300);
+
+            window.db.collection("service_orders").onSnapshot((snapshot) => {
+                try {
+                    window.dbState.orders = snapshot.docs.map(d => ({
+                        ...d.data(),
+                        id: d.id,
+                        hullNumber: d.data().hullNumber || d.id.split('_')[0] || ''
+                    }));
+                } catch(e) { console.error("orders snapshot error:", e); }
+                window.scheduleRender();
+            }, (err) => { console.error("orders listener error:", err); });
+
+            window.db.collection("excavators").onSnapshot((snapshot) => {
+                try {
+                    const validMap = new Map();
+                    snapshot.docs.forEach(doc => {
+                        const data = doc.data() || {};
+                        const hull = String(data.hullNumber || doc.id || '').trim();
+                        if (!hull) return;
+                        const key = hull.toUpperCase();
+                        if (!validMap.has(key)) {
+                            validMap.set(key, { ...data, id: doc.id, hullNumber: data.hullNumber || doc.id, serialNumber: data.serialNumber || '-' });
+                        }
+                    });
+                    window.dbState.excavators = Array.from(validMap.values());
+                } catch(e) {
+                    console.error("excavators snapshot error:", e);
+                    window.dbState.excavators = snapshot.docs.map(d => ({ ...d.data(), id: d.id, hullNumber: d.data().hullNumber || d.id }));
+                }
+                window.scheduleRender();
+            }, (err) => { console.error("excavators listener error:", err); });
+
+            window.db.collection("users").onSnapshot((snapshot) => {
+                try {
+                    window.dbState.users = snapshot.docs.map(d => ({
+                        ...d.data(),
+                        id: d.id,
+                        username: d.data().username || d.id
+                    }));
+                } catch(e) { console.error("users snapshot error:", e); }
+                window.scheduleRender();
+            }, (err) => { console.error("users listener error:", err); });
+
+            window.db.collection("service_history").onSnapshot((snapshot) => {
+                try {
+                    window.dbState.history = snapshot.docs.map(d => ({
+                        ...d.data(),
+                        id: d.id,
+                        hullNumber: d.data().hullNumber || d.id.split('_')[0] || ''
+                    }));
+                } catch(e) { console.error("history snapshot error:", e); }
+                window.scheduleRender();
+            }, (err) => { console.error("history listener error:", err); });
+        }
+
+        window.refreshData = function() {
+            window.showToast("Menyingkronkan data dari server...", "info");
+            if (window.db) {
+                Promise.all([
+                    window.db.collection("excavators").get(),
+                    window.db.collection("service_orders").get(),
+                    window.db.collection("users").get(),
+                    window.db.collection("service_history").get()
+                ]).then(([excSnap, orderSnap, userSnap, histSnap]) => {
+                    if (excSnap) {
+                        const validMap = new Map();
+                        excSnap.docs.forEach(doc => {
+                            const data = doc.data() || {};
+                            const hull = String(data.hullNumber || doc.id || '').trim();
+                            if (!hull) return;
+                            const key = hull.toUpperCase();
+                            if (!validMap.has(key)) {
+                                validMap.set(key, { ...data, id: doc.id, hullNumber: data.hullNumber || doc.id, serialNumber: data.serialNumber || '-' });
+                            }
+                        });
+                        window.dbState.excavators = Array.from(validMap.values());
+                    }
+                    if (orderSnap) {
+                        window.dbState.orders = orderSnap.docs.map(d => ({ ...d.data(), id: d.id, hullNumber: d.data().hullNumber || d.id.split('_')[0] || '' }));
+                    }
+                    if (userSnap) {
+                        window.dbState.users = userSnap.docs.map(d => ({ ...d.data(), id: d.id, username: d.data().username || d.id }));
+                    }
+                    if (histSnap) {
+                        window.dbState.history = histSnap.docs.map(d => ({ ...d.data(), id: d.id, hullNumber: d.data().hullNumber || d.id.split('_')[0] || '' }));
+                    }
+                    if (window.updateLastSyncStatus) window.updateLastSyncStatus();
+                    renderScheduled = false;
+                    window.scheduleRender();
+                    window.showToast("Data Admin berhasil disinkronkan!", "success");
+                }).catch(err => {
+                    console.error("refreshData error:", err);
+                    renderScheduled = false;
+                    window.scheduleRender();
+                });
+            } else {
+                renderScheduled = false;
+                window.scheduleRender();
+            }
+        };
+
+        window.renderDashboardStats = function() {
+            const fleet = (window.dbState.excavators || []).map(f => ({
+                ...f,
+                hullNumber: f.hullNumber || f.id
+            })).filter(f => (f.hullNumber || '').trim() !== '');
+
+            const orders = window.dbState.orders || [];
+            const users = (window.dbState.users || []).map(u => ({
+                ...u,
+                username: u.username || u.id
+            })).filter(u => (u.username || '').trim() !== '');
+            const history = window.dbState.history || [];
+
+            const totalFleetEl = document.getElementById('stat-total-fleet');
+            if(totalFleetEl) totalFleetEl.innerText = fleet.length;
+
+            const totalUsersEl = document.getElementById('stat-total-users');
+            if(totalUsersEl) totalUsersEl.innerText = users.length;
+
+            const activeOrders = orders.filter(o => o.status !== 'COMPLETED' && o.status !== 'CANCELLED');
+            const activeOrdersEl = document.getElementById('stat-active-orders');
+            if(activeOrdersEl) activeOrdersEl.innerText = activeOrders.length;
+
+            const badgeOrdersEl = document.getElementById('badge-orders-count');
+            if(badgeOrdersEl) badgeOrdersEl.innerText = activeOrders.length;
+
+            const unassignedUnits = fleet.filter(f => window.isUnitUnassigned(f));
+            const badgeUnassignedEl = document.getElementById('badge-unassigned-count');
+            if(badgeUnassignedEl) badgeUnassignedEl.innerText = unassignedUnits.length;
+
+            const dueUnits = fleet.filter(u => window.isUnitInWarranty(u) && (Number(u.nextServiceTargetHM || 0) - Number(u.currentHM || 0)) <= 100);
+            const dueCount = dueUnits.length;
+            const dueServiceEl = document.getElementById('stat-due-service');
+            if(dueServiceEl) dueServiceEl.innerText = dueCount;
+
+            const badgeDueEl = document.getElementById('badge-due-hm-count');
+            if(badgeDueEl) badgeDueEl.innerText = dueCount;
+
+            const lateUnits = fleet.filter(u => {
+                if (!window.isUnitInWarranty(u)) return false;
+                const unitHist = history.filter(h => (h.hullNumber || h.id) === u.hullNumber);
+                const lastServiceDate = unitHist.reduce((max, h) => Math.max(max, h.date || h.timestamp || 0), 0);
+                if (lastServiceDate === 0) return true;
+                return (Date.now() - lastServiceDate) > (30 * 24 * 60 * 60 * 1000);
+            });
+            const badgeLateEl = document.getElementById('badge-late-warranty-count');
+            if(badgeLateEl) badgeLateEl.innerText = lateUnits.length;
+
+            // Monthly Serviced Count
+            const now = new Date();
+            const curMonth = now.getMonth();
+            const curYear = now.getFullYear();
+
+            const servicedThisMonth = history.filter(h => {
+                const rawDate = h.date || h.timestamp;
+                if (!rawDate) return false;
+                const d = new Date(rawDate);
+                return d.getMonth() === curMonth && d.getFullYear() === curYear;
+            }).length;
+
+            const servicedMonthEl = document.getElementById('stat-serviced-month-count');
+            if (servicedMonthEl) servicedMonthEl.innerText = `${servicedThisMonth} Unit`;
+
+            const waitingServiceEl = document.getElementById('stat-waiting-service-count');
+            if (waitingServiceEl) waitingServiceEl.innerText = `${activeOrders.length} Unit`;
+
+            const areaContainer = document.getElementById('area-stats-container');
+            if(!areaContainer) return;
+
+            const areas = ['Smelter', 'EOS', 'KM15'];
+            areaContainer.innerHTML = areas.map(areaName => {
+                const areaOrders = activeOrders.filter(o => {
+                    const mech = users.find(u => (u.username || '').toLowerCase() === (o.mechanicId || '').toLowerCase());
+                    const unit = fleet.find(u => u.hullNumber === o.hullNumber);
+                    const rawArea = mech?.area || unit?.area || 'Lainnya';
+                    return window.normalizeAreaName(rawArea).toLowerCase() === areaName.toLowerCase();
+                });
+
+                const readyCount = areaOrders.filter(o => o.status === 'PARTS_ISSUED' || o.status === 'READY_FOR_WORK').length;
+                const waitingCount = areaOrders.filter(o => o.status === 'WAITING_PARTS' || o.status === 'APPROVED' || o.status === 'PENDING').length;
+
+                return `
+                    <div class="bg-slate-950/80 border border-slate-800 p-4 rounded-xl space-y-2">
+                        <p class="text-xs font-bold text-white flex items-center gap-1.5">
+                            <i class="fa-solid fa-location-dot text-amber-500"></i>
+                            <span>Area ${areaName}</span>
+                        </p>
+                        <div class="grid grid-cols-2 gap-2 text-center text-xs">
+                            <div class="bg-emerald-500/10 border border-emerald-500/20 p-2 rounded-lg">
+                                <p class="text-[10px] text-emerald-400 font-bold">🟢 Part Ready</p>
+                                <p class="text-base font-black text-emerald-400 mt-0.5">${readyCount} Unit</p>
+                            </div>
+                            <div class="bg-amber-500/10 border border-amber-500/20 p-2 rounded-lg">
+                                <p class="text-[10px] text-amber-400 font-bold">🟡 Waiting Part</p>
+                                <p class="text-base font-black text-amber-400 mt-0.5">${waitingCount} Unit</p>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            const grandReady = activeOrders.filter(o => o.status === 'PARTS_ISSUED' || o.status === 'READY_FOR_WORK').length;
+            const grandWaiting = activeOrders.filter(o => o.status === 'WAITING_PARTS' || o.status === 'APPROVED' || o.status === 'PENDING').length;
+
+            const grandReadyEl = document.getElementById('stat-grand-ready');
+            if (grandReadyEl) grandReadyEl.innerText = `${grandReady} Unit Ready`;
+
+            const grandWaitingEl = document.getElementById('stat-grand-waiting');
+            if (grandWaitingEl) grandWaitingEl.innerText = `${grandWaiting} Unit Waiting`;
+        };
+
+        window.renderOrdersTable = function() {
+            const tbody = document.getElementById('orders-table-body');
+            if(!tbody) return;
+
+            const globalSearch = (document.getElementById('search-orders')?.value || '').toLowerCase().trim();
+            const filterHull = (document.getElementById('col-filter-orders-hull')?.value || '').toLowerCase().trim();
+            const filterSn = (document.getElementById('col-filter-orders-sn')?.value || '').toLowerCase().trim();
+            const filterType = (document.getElementById('col-filter-orders-type')?.value || '').toLowerCase().trim();
+            const filterMech = (document.getElementById('col-filter-orders-mech')?.value || '').toLowerCase().trim();
+            const filterStatus = (document.getElementById('col-filter-orders-status')?.value || '').toUpperCase().trim();
+            const filterParts = (document.getElementById('col-filter-orders-parts')?.value || '').toLowerCase().trim();
+
+            const orders = window.dbState.orders || [];
+            const activeOrders = orders.filter(o => o.status !== 'COMPLETED' && o.status !== 'CANCELLED').filter(o => {
+                const hull = o.hullNumber || o.id;
+                const sn = window.getUnitSerialNumber(hull, o);
+
+                if (globalSearch) {
+                    const mHull = hull.toLowerCase().includes(globalSearch);
+                    const mSn = sn.toLowerCase().includes(globalSearch);
+                    const mType = (o.serviceType || '').toLowerCase().includes(globalSearch);
+                    const mMech = (o.mechanicId || '').toLowerCase().includes(globalSearch);
+                    const mParts = (o.partsNeeded || '').toLowerCase().includes(globalSearch);
+                    if (!mHull && !mSn && !mType && !mMech && !mParts) return false;
+                }
+
+                if (filterHull && !hull.toLowerCase().includes(filterHull)) return false;
+                if (filterSn && !sn.toLowerCase().includes(filterSn)) return false;
+                if (filterType && !(o.serviceType || '').toLowerCase().includes(filterType)) return false;
+                if (filterMech && !(o.mechanicId || '').toLowerCase().includes(filterMech)) return false;
+                if (filterStatus && (o.status || '').toUpperCase() !== filterStatus) return false;
+                if (filterParts && !(o.partsNeeded || '').toLowerCase().includes(filterParts)) return false;
+
+                return true;
+            });
+
+            if(activeOrders.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="7" class="p-6 text-center text-slate-500">Tidak ada order part yang cocok.</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = activeOrders.map(o => {
+                const hull = o.hullNumber || o.id;
+                const sn = window.getUnitSerialNumber(hull, o);
+                const statusBadge = `<span class="px-2.5 py-1 rounded-md text-[10px] font-extrabold bg-amber-500/20 text-amber-400 border border-amber-500/30">${o.status || 'APPROVED'}</span>`;
+
+                return `
+                    <tr class="hover:bg-slate-800/40 transition">
+                        <td class="p-4 font-bold text-amber-400">${hull}</td>
+                        <td class="p-4 text-emerald-400 font-mono font-bold">${sn}</td>
+                        <td class="p-4 text-white">${o.unitType || ''} | ${o.serviceType || ''}</td>
+                        <td class="p-4 text-blue-400 font-semibold">${o.mechanicId || '-'}</td>
+                        <td class="p-4">${statusBadge}</td>
+                        <td class="p-4 text-slate-300">${o.partsNeeded || '-'}</td>
+                        <td class="p-4 text-center">
+                            <select onchange="window.updateOrderStatus('${o.id}', this.value)" class="bg-slate-950 border border-slate-800 text-white text-xs rounded-xl px-2 py-1 font-bold">
+                                <option value="APPROVED" ${o.status === 'APPROVED' ? 'selected' : ''}>Disetujui</option>
+                                <option value="WAITING_PARTS" ${o.status === 'WAITING_PARTS' ? 'selected' : ''}>Menunggu Part</option>
+                                <option value="PARTS_ISSUED" ${o.status === 'PARTS_ISSUED' ? 'selected' : ''}>Part Keluar</option>
+                                <option value="READY_FOR_WORK" ${o.status === 'READY_FOR_WORK' ? 'selected' : ''}>Siap Dikerjakan</option>
+                                <option value="COMPLETED" ${o.status === 'COMPLETED' ? 'selected' : ''}>Selesai</option>
+                            </select>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        };
+
+        window.updateOrderStatus = function(id, newStatus) {
+            window.db.collection("service_orders").doc(id).set({ status: newStatus, isSync: true }, { merge: true })
+                .then(() => {
+                    window.showToast("Status order berhasil diperbarui!", "success");
+                    window.scheduleRender();
+                });
+        };
+
+        window.renderUnassignedUnitsTable = function() {
+            const tbody = document.getElementById('unassigned-units-table-body');
+            if(!tbody) return;
+
+            const fleet = (window.dbState.excavators || []).map(d => ({
+                ...d,
+                hullNumber: d.hullNumber || d.id
+            })).filter(f => (f.hullNumber || '').trim() !== '');
+
+            const unassignedUnits = fleet.filter(f => window.isUnitUnassigned(f));
+
+            if(unassignedUnits.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="5" class="p-6 text-center text-slate-500">Seluruh unit armada telah memiliki mekanik.</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = unassignedUnits.map(f => {
+                const hull = f.hullNumber || f.id;
+                return `
+                    <tr class="hover:bg-slate-800/40 transition">
+                        <td class="p-4 font-bold text-amber-400">${hull}</td>
+                        <td class="p-4 text-emerald-400 font-mono font-bold">${f.serialNumber || '-'}</td>
+                        <td class="p-4 text-white">${f.brand || ''} ${f.model || ''}</td>
+                        <td class="p-4 font-bold text-emerald-400">${f.currentHM || 0} HM</td>
+                        <td class="p-4 text-red-400 font-bold">Belum Ditugaskan</td>
+                    </tr>
+                `;
+            }).join('');
+        };
+
+        window.renderLateWarrantyTable = function() {
+            const tbody = document.getElementById('late-warranty-table-body');
+            if(!tbody) return;
+
+            const filterHull = (document.getElementById('col-filter-late-hull')?.value || '').toLowerCase().trim();
+            const filterSn = (document.getElementById('col-filter-late-sn')?.value || '').toLowerCase().trim();
+            const filterModel = (document.getElementById('col-filter-late-model')?.value || '').toLowerCase().trim();
+            const filterHm = (document.getElementById('col-filter-late-hm')?.value || '').toLowerCase().trim();
+            const filterDate = (document.getElementById('col-filter-late-date')?.value || '').toLowerCase().trim();
+            const filterLastHm = (document.getElementById('col-filter-late-last-hm')?.value || '').toLowerCase().trim();
+            const filterType = (document.getElementById('col-filter-late-type')?.value || '').toLowerCase().trim();
+            const filterDelay = (document.getElementById('col-filter-late-delay')?.value || '').toLowerCase().trim();
+            const filterMech = (document.getElementById('col-filter-late-mech')?.value || '').toLowerCase().trim();
+
+            const fleet = (window.dbState.excavators || []).map(d => ({
+                ...d,
+                hullNumber: d.hullNumber || d.id
+            })).filter(f => (f.hullNumber || '').trim() !== '');
+
+            const history = window.dbState.history || [];
+            const now = Date.now();
+            const thirtyDaysInMillis = 30 * 24 * 60 * 60 * 1000;
+
+            const lateUnits = fleet.filter(u => {
+                if (!window.isUnitInWarranty(u)) return false;
+                const unitHist = history.filter(h => (h.hullNumber || h.id) === u.hullNumber);
+                const lastServiceDate = unitHist.reduce((max, h) => Math.max(max, h.date || h.timestamp || 0), 0);
+                if (lastServiceDate === 0) return true;
+                return (now - lastServiceDate) > thirtyDaysInMillis;
+            }).filter(f => {
+                const hull = (f.hullNumber || f.id || '').toLowerCase();
+                const sn = (f.serialNumber || '-').toLowerCase();
+                const model = (`${f.brand || ''} ${f.model || ''}`).toLowerCase();
+                const hm = String(f.currentHM || 0);
+                const sInfo = window.getUnitLastServiceInfo(f, history);
+                const dateStr = sInfo.dateStr.toLowerCase();
+                const lastHmStr = sInfo.hmStr.toLowerCase();
+                const typeStr = sInfo.typeStr.toLowerCase();
+                const delayStr = ">30 hari telat".toLowerCase();
+                const mech = (f.assignedMechanicId || '-').toLowerCase();
+
+                if (filterHull && !hull.includes(filterHull)) return false;
+                if (filterSn && !sn.includes(filterSn)) return false;
+                if (filterModel && !model.includes(filterModel)) return false;
+                if (filterHm && !hm.includes(filterHm)) return false;
+                if (filterDate && !dateStr.includes(filterDate)) return false;
+                if (filterLastHm && !lastHmStr.includes(filterLastHm)) return false;
+                if (filterType && !typeStr.includes(filterType)) return false;
+                if (filterDelay && !delayStr.includes(filterDelay)) return false;
+                if (filterMech && !mech.includes(filterMech)) return false;
+
+                return true;
+            });
+
+            if(lateUnits.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="10" class="p-6 text-center text-slate-500">Tidak ada unit garansi yang telat servis (>30H).</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = lateUnits.map(f => {
+                const hull = f.hullNumber || f.id;
+                const sInfo = window.getUnitLastServiceInfo(f, history);
+                return `
+                    <tr class="hover:bg-slate-800/40 transition">
+                        <td class="p-4 font-bold text-amber-400">${hull}</td>
+                        <td class="p-4 text-emerald-400 font-mono font-bold">${f.serialNumber || '-'}</td>
+                        <td class="p-4 text-white">${f.brand || ''} ${f.model || ''}</td>
+                        <td class="p-4 font-bold text-emerald-400">${f.currentHM || 0} HM</td>
+                        <td class="p-4 text-slate-300 font-semibold">${sInfo.dateStr}</td>
+                        <td class="p-4 text-emerald-400 font-bold">${sInfo.hmStr}</td>
+                        <td class="p-4 text-blue-400 font-bold">${sInfo.typeStr}</td>
+                        <td class="p-4 text-red-400 font-extrabold">>30 Hari Telat</td>
+                        <td class="p-4 text-blue-400 font-semibold">${f.assignedMechanicId || '-'}</td>
+                        <td class="p-4 text-center">
+                            <div class="flex items-center justify-center gap-2">
+                                <button onclick="window.openSingleUnitModal('${f.hullNumber || f.id}')" class="text-blue-400 hover:text-blue-300 font-bold text-xs" title="Edit Data Unit">✏️ Edit</button>
+                                <button onclick="window.deleteUnit('${f.hullNumber || f.id}')" class="text-red-400 hover:text-red-300 font-bold text-xs" title="Hapus Unit">🗑️ Hapus</button>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        };
+
+        window.renderDueHMTable = function() {
+            const tbody = document.getElementById('due-hm-table-body');
+            if(!tbody) return;
+
+            const filterHull = (document.getElementById('col-filter-due-hull')?.value || '').toLowerCase().trim();
+            const filterSn = (document.getElementById('col-filter-due-sn')?.value || '').toLowerCase().trim();
+            const filterModel = (document.getElementById('col-filter-due-model')?.value || '').toLowerCase().trim();
+            const filterHm = (document.getElementById('col-filter-due-hm')?.value || '').toLowerCase().trim();
+            const filterTarget = (document.getElementById('col-filter-due-target')?.value || '').toLowerCase().trim();
+            const filterRemaining = (document.getElementById('col-filter-due-remaining')?.value || '').toLowerCase().trim();
+            const filterDate = (document.getElementById('col-filter-due-date')?.value || '').toLowerCase().trim();
+            const filterLastHm = (document.getElementById('col-filter-due-last-hm')?.value || '').toLowerCase().trim();
+            const filterType = (document.getElementById('col-filter-due-type')?.value || '').toLowerCase().trim();
+            const filterMech = (document.getElementById('col-filter-due-mech')?.value || '').toLowerCase().trim();
+
+            const fleet = (window.dbState.excavators || []).map(d => ({
+                ...d,
+                hullNumber: d.hullNumber || d.id
+            })).filter(f => (f.hullNumber || '').trim() !== '');
+
+            const history = window.dbState.history || [];
+            const dueUnits = fleet.filter(u => window.isUnitInWarranty(u) && (u.nextServiceTargetHM - u.currentHM) <= 100).filter(f => {
+                const hull = (f.hullNumber || f.id || '').toLowerCase();
+                const sn = (f.serialNumber || '-').toLowerCase();
+                const model = (`${f.brand || ''} ${f.model || ''}`).toLowerCase();
+                const hm = String(f.currentHM || 0);
+                const target = String(f.nextServiceTargetHM || 0);
+                const remainingVal = (f.nextServiceTargetHM - f.currentHM).toFixed(1);
+                const remainingStr = `sisa ${remainingVal} hm`.toLowerCase();
+                const sInfo = window.getUnitLastServiceInfo(f, history);
+                const dateStr = sInfo.dateStr.toLowerCase();
+                const lastHmStr = sInfo.hmStr.toLowerCase();
+                const typeStr = sInfo.typeStr.toLowerCase();
+                const mech = (f.assignedMechanicId || '-').toLowerCase();
+
+                if (filterHull && !hull.includes(filterHull)) return false;
+                if (filterSn && !sn.includes(filterSn)) return false;
+                if (filterModel && !model.includes(filterModel)) return false;
+                if (filterHm && !hm.includes(filterHm)) return false;
+                if (filterTarget && !target.includes(filterTarget)) return false;
+                if (filterRemaining && !remainingStr.includes(filterRemaining)) return false;
+                if (filterDate && !dateStr.includes(filterDate)) return false;
+                if (filterLastHm && !lastHmStr.includes(filterLastHm)) return false;
+                if (filterType && !typeStr.includes(filterType)) return false;
+                if (filterMech && !mech.includes(filterMech)) return false;
+
+                return true;
+            });
+
+            if(dueUnits.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="11" class="p-6 text-center text-slate-500">Tidak ada unit garansi yang mendekati / jatuh tempo HM.</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = dueUnits.map(f => {
+                const hull = f.hullNumber || f.id;
+                const remaining = (f.nextServiceTargetHM - f.currentHM).toFixed(1);
+                const sInfo = window.getUnitLastServiceInfo(f, history);
+
+                return `
+                    <tr class="hover:bg-slate-800/40 transition">
+                        <td class="p-4 font-bold text-amber-400">${hull}</td>
+                        <td class="p-4 text-emerald-400 font-mono font-bold">${f.serialNumber || '-'}</td>
+                        <td class="p-4 text-white">${f.brand || ''} ${f.model || ''}</td>
+                        <td class="p-4 font-bold text-emerald-400">${f.currentHM || 0} HM</td>
+                        <td class="p-4 text-slate-300 font-bold">${f.nextServiceTargetHM || 0} HM</td>
+                        <td class="p-4 text-amber-400 font-extrabold">Sisa ${remaining} HM</td>
+                        <td class="p-4 text-slate-300 font-semibold">${sInfo.dateStr}</td>
+                        <td class="p-4 text-emerald-400 font-bold">${sInfo.hmStr}</td>
+                        <td class="p-4 text-blue-400 font-bold">${sInfo.typeStr}</td>
+                        <td class="p-4 text-blue-400 font-semibold">${f.assignedMechanicId || '-'}</td>
+                        <td class="p-4 text-center">
+                            <div class="flex items-center justify-center gap-2">
+                                <button onclick="window.openSingleUnitModal('${f.hullNumber || f.id}')" class="text-blue-400 hover:text-blue-300 font-bold text-xs" title="Edit Data Unit">✏️ Edit</button>
+                                <button onclick="window.deleteUnit('${f.hullNumber || f.id}')" class="text-red-400 hover:text-red-300 font-bold text-xs" title="Hapus Unit">🗑️ Hapus</button>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        };
+
+        window.renderFleetTable = function() {
+            const tbody = document.getElementById('fleet-table-body');
+            if(!tbody) return;
+
+            const globalSearch = (document.getElementById('search-fleet')?.value || '').toLowerCase().trim();
+            const filterHull = (document.getElementById('col-filter-fleet-hull')?.value || '').toLowerCase().trim();
+            const filterSn = (document.getElementById('col-filter-fleet-sn')?.value || '').toLowerCase().trim();
+            const filterModel = (document.getElementById('col-filter-fleet-model')?.value || '').toLowerCase().trim();
+            const filterHm = (document.getElementById('col-filter-fleet-hm')?.value || '').toLowerCase().trim();
+            const filterDate = (document.getElementById('col-filter-fleet-date')?.value || '').toLowerCase().trim();
+            const filterWarr = (document.getElementById('col-filter-fleet-warr')?.value || '').toUpperCase().trim();
+            const filterHandling = (document.getElementById('col-filter-fleet-handling')?.value || '').toUpperCase().trim();
+            const filterMechanic = (document.getElementById('col-filter-fleet-mechanic')?.value || '').toLowerCase().trim();
+
+            const history = window.dbState.history || [];
+
+            const fleet = (window.dbState.excavators || []).map(d => ({
+                ...d,
+                hullNumber: d.hullNumber || d.id,
+                serialNumber: d.serialNumber || '-'
+            })).filter(f => (f.hullNumber || '').trim() !== '').filter(f => {
+                if (globalSearch) {
+                    const mHull = (f.hullNumber || '').toLowerCase().includes(globalSearch);
+                    const mSn = (f.serialNumber || '').toLowerCase().includes(globalSearch);
+                    const mBrand = (f.brand || '').toLowerCase().includes(globalSearch);
+                    const mModel = (f.model || '').toLowerCase().includes(globalSearch);
+                    const mMech = (f.assignedMechanicId || '').toLowerCase().includes(globalSearch);
+                    if (!mHull && !mSn && !mBrand && !mModel && !mMech) return false;
+                }
+
+                if (filterHull && !(f.hullNumber || '').toLowerCase().includes(filterHull)) return false;
+                if (filterSn && !(f.serialNumber || '').toLowerCase().includes(filterSn)) return false;
+                if (filterModel && !(f.model || '').toLowerCase().includes(filterModel)) return false;
+                if (filterHm && !(String(f.currentHM || 0)).includes(filterHm)) return false;
+
+                const lastHMDate = window.getUnitLastHMDateStr(f, history);
+                if (filterDate && !window.matchDateFlexible(lastHMDate, filterDate)) return false;
+
+                if (filterWarr) {
+                    const inWarr = window.isUnitInWarranty(f);
+                    if (filterWarr === 'GARANSI AKTIF' && !inWarr) return false;
+                    if (filterWarr === 'OUT WARRANTY' && inWarr) return false;
+                }
+
+                if (filterHandling) {
+                    const handling = (f.warrantyHandlingType || 'INTERNAL').toUpperCase();
+                    if (handling !== filterHandling) return false;
+                }
+
+                if (filterMechanic && !(f.assignedMechanicId || '').toLowerCase().includes(filterMechanic)) return false;
+
+                return true;
+            });
+
+            if(fleet.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="9" class="p-6 text-center text-slate-500">Tidak ada unit armada.</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = fleet.map(f => {
+                const inWarranty = window.isUnitInWarranty(f);
+                const warrantyBadge = inWarranty ?
+                    `<span class="px-2.5 py-1 rounded-md text-[10px] font-extrabold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">GARANSI AKTIF</span>` :
+                    `<span class="px-2.5 py-1 rounded-md text-[10px] font-extrabold bg-slate-800 text-slate-400 border border-slate-700">OUT WARRANTY</span>`;
+
+                const lastHMDate = window.getUnitLastHMDateStr(f, history);
+                const handlingType = (f.warrantyHandlingType || 'INTERNAL').toUpperCase();
+                const isCustomerDirect = handlingType === 'CUSTOMER_DIRECT';
+
+                let mapLat = Number(f.lastLatitude || 0);
+                let mapLng = Number(f.lastLongitude || 0);
+                if (Math.abs(mapLat) > 90 && Math.abs(mapLng) <= 90) {
+                    const temp = mapLat;
+                    mapLat = mapLng;
+                    mapLng = temp;
+                }
+
+                const mapsBtn = (mapLat !== 0 && mapLng !== 0) ?
+                    `<a href="https://www.google.com/maps?q=${mapLat},${mapLng}" target="_blank" class="inline-flex items-center gap-1 text-[10px] font-bold text-blue-400 hover:underline bg-blue-500/10 border border-blue-500/20 px-1.5 py-0.5 rounded ml-1">📍 Maps</a>` : '';
+
+                const handlingSelector = `
+                    <select onchange="window.updateWarrantyHandling('${f.hullNumber || f.id}', this.value)" class="bg-slate-950 border border-slate-800 text-[11px] rounded-lg px-2 py-1 ${isCustomerDirect ? 'text-purple-400 border-purple-500/40 bg-purple-500/10' : 'text-blue-400 border-blue-500/40 bg-blue-500/10'} font-bold focus:outline-none cursor-pointer">
+                        <option value="INTERNAL" ${isCustomerDirect ? '' : 'selected'} class="bg-slate-900 text-blue-400">🔵 Internal</option>
+                        <option value="CUSTOMER_DIRECT" ${isCustomerDirect ? 'selected' : ''} class="bg-slate-900 text-purple-400">🟣 Customer</option>
+                    </select>
+                `;
+
+                return `
+                    <tr class="hover:bg-slate-800/40 transition">
+                        <td class="p-4 font-bold text-amber-400">${f.hullNumber || '-'}</td>
+                        <td class="p-4 text-emerald-400 font-mono font-bold">${f.serialNumber || '-'}</td>
+                        <td class="p-4 text-white">${f.brand || ''} ${f.model || ''}</td>
+                        <td class="p-4 font-bold text-emerald-400">
+                            <div class="flex items-center gap-1.5">
+                                <span>${f.currentHM || 0} HM</span>
+                                <button onclick="window.openEditHMModal('${f.id}')" class="px-1.5 py-0.5 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded text-[10px] font-bold transition cursor-pointer" title="Ubah HM Direct">✏️ Edit</button>
+                            </div>
+                        </td>
+                        <td class="p-4 text-slate-400">${f.nextServiceTargetHM || 0} HM</td>
+                        <td class="p-4 text-emerald-400 font-bold">${lastHMDate} ${mapsBtn}</td>
+                        <td class="p-4">${warrantyBadge}</td>
+                        <td class="p-4">${handlingSelector}</td>
+                        <td class="p-4 text-blue-400 font-bold">${f.assignedMechanicId || '-'}</td>
+                        <td class="p-4 text-center">
+                            <div class="flex items-center justify-center gap-2">
+                                <button onclick="window.openSingleUnitModal('${f.hullNumber || f.id}')" class="text-blue-400 hover:text-blue-300 font-bold text-xs" title="Edit Data Unit">✏️ Edit</button>
+                                <button onclick="window.deleteUnit('${f.hullNumber || f.id}')" class="text-red-400 hover:text-red-300 font-bold text-xs" title="Hapus Unit">🗑️ Hapus</button>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        };
+
+        window.renderReadyParts = function() {
+            const container = document.getElementById('ready-parts-container');
+            if(!container) return;
+
+            const selectedArea = window.currentPartsAreaFilter || 'Semua Area';
+            const orders = (window.dbState.orders || []).filter(o => o.status === 'PARTS_ISSUED' || o.status === 'READY_FOR_WORK');
+            const users = window.dbState.users || [];
+            const fleet = window.dbState.excavators || [];
+
+            const filteredOrders = orders.filter(o => {
+                if(selectedArea === 'Semua Area') return true;
+                const mech = users.find(u => (u.username || '').toLowerCase() === (o.mechanicId || '').toLowerCase());
+                const unit = fleet.find(u => u.hullNumber === o.hullNumber);
+                const rawArea = mech?.area || unit?.area || 'Lainnya';
+                const area = window.normalizeAreaName(rawArea);
+                return area.toLowerCase() === selectedArea.toLowerCase();
+            });
+
+            if(filteredOrders.length === 0) {
+                container.innerHTML = `<div class="bg-slate-900 border border-slate-800 p-8 text-center rounded-2xl text-slate-500">Tidak ada part ready untuk ${selectedArea}.</div>`;
+                return;
+            }
+
+            const categoryMap = {};
+
+            filteredOrders.forEach(o => {
+                const uType = (o.unitType || 'Unit').trim();
+                const sType = (o.serviceType || 'Servis').trim();
+                const categoryKey = `${uType} - ${sType}`;
+                const hull = (o.hullNumber || '').trim();
+
+                if (!categoryMap[categoryKey]) {
+                    categoryMap[categoryKey] = {
+                        unitType: uType,
+                        serviceType: sType,
+                        units: [],
+                        partsNeeded: o.partsNeeded || ''
+                    };
+                }
+                if (!categoryMap[categoryKey].units.includes(hull)) {
+                    categoryMap[categoryKey].units.push(hull);
+                }
+            });
+
+            container.innerHTML = Object.values(categoryMap).map(cat => {
+                const unitsList = cat.units.join(', ');
+                const parts = cat.partsNeeded ? cat.partsNeeded.split(', ') : [];
+
+                return `
+                    <div class="bg-slate-900 border border-slate-800 p-5 rounded-2xl space-y-3 shadow-xl">
+                        <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+                            <span class="font-extrabold text-white text-sm">${cat.unitType} | ${cat.serviceType}</span>
+                            <span class="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">${cat.units.length} Unit</span>
+                        </div>
+                        <div class="text-xs text-slate-300">
+                            <p class="font-bold text-slate-400">Daftar Unit:</p>
+                            <p class="font-mono text-amber-400 font-bold mt-0.5">${unitsList}</p>
+                        </div>
+                        <div class="text-xs text-slate-300">
+                            <p class="font-bold text-slate-400">Suku Cadang Siap Pakai:</p>
+                            <ul class="list-disc list-inside mt-1 space-y-0.5 text-slate-300">
+                                ${parts.map(p => `<li>${p}</li>`).join('')}
+                            </ul>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        };
+
+        window.renderUsersTable = function() {
+            const tbody = document.getElementById('users-table-body');
+            if(!tbody) return;
+
+            const globalSearch = (document.getElementById('search-users')?.value || '').toLowerCase().trim();
+            const filterName = (document.getElementById('col-filter-users-name')?.value || '').toLowerCase().trim();
+            const filterRole = (document.getElementById('col-filter-users-role')?.value || '').toUpperCase().trim();
+            const filterArea = (document.getElementById('col-filter-users-area')?.value || '').toLowerCase().trim();
+
+            const users = (window.dbState.users || []).filter(u => {
+                const username = u.username || u.id || '';
+                const role = u.role || 'MECHANIC';
+                const area = u.area || 'Smelter';
+
+                if (globalSearch) {
+                    const mUser = username.toLowerCase().includes(globalSearch);
+                    const mRole = role.toLowerCase().includes(globalSearch);
+                    const mArea = area.toLowerCase().includes(globalSearch);
+                    if (!mUser && !mRole && !mArea) return false;
+                }
+
+                if (filterName && !username.toLowerCase().includes(filterName)) return false;
+                if (filterRole && role.toUpperCase() !== filterRole) return false;
+                if (filterArea && !area.toLowerCase().includes(filterArea)) return false;
+
+                return true;
+            });
+
+            if(users.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="4" class="p-6 text-center text-slate-500">Tidak ada user yang cocok.</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = users.map(u => {
+                const username = u.username || u.id;
+                return `
+                    <tr class="hover:bg-slate-800/40 transition">
+                        <td class="p-4 font-bold text-white">${username}</td>
+                        <td class="p-4 font-semibold text-amber-400">${u.role || 'MECHANIC'}</td>
+                        <td class="p-4 text-blue-400 font-semibold">${u.area || 'Smelter'}</td>
+                        <td class="p-4 text-center">
+                            <button onclick="window.deleteUser('${username}')" class="text-red-400 hover:text-red-300 font-bold text-xs">🗑️ Hapus</button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        };
+
+        window.deleteUser = function(username) {
+            if(confirm(`Hapus pengguna ${username}?`)) {
+                window.db.collection("users").doc(username).delete()
+                    .then(() => {
+                        window.showToast(`User ${username} berhasil dihapus!`, "success");
+                        window.scheduleRender();
+                    });
+            }
+        };
+
+        window.openAddUserModal = function() {
+            document.getElementById('modal-add-user').classList.remove('hidden');
+        };
+
+        window.closeAddUserModal = function() {
+            document.getElementById('modal-add-user').classList.add('hidden');
+        };
+
+        window.submitAddUser = function() {
+            const username = document.getElementById('add-username-input').value.trim();
+            const role = document.getElementById('add-user-role').value;
+            const area = document.getElementById('add-user-area').value;
+
+            if(!username) {
+                alert("Harap isi username!");
+                return;
+            }
+
+            const defaultPass = role === 'ADMIN' ? 'admin123' : role === 'SUPERVISOR' ? 'supervisor123' : 'password123';
+
+            window.db.collection("users").doc(username).set({
+                username: username,
+                role: role,
+                area: area,
+                password: defaultPass,
+                isFirstLogin: false
+            }, { merge: true })
+            .then(() => {
+                window.showToast(`User ${username} berhasil ditambahkan!`, "success");
+                window.closeAddUserModal();
+                window.scheduleRender();
+            })
+            .catch(err => {
+                window.showToast("Gagal menambah user: " + err.message, "error");
+            });
+        };
+
+        window.renderHistoryTable = function() {
+            const tbody = document.getElementById('history-table-body');
+            if(!tbody) return;
+
+            const globalSearch = (document.getElementById('search-history')?.value || '').toLowerCase().trim();
+            const filterHull = (document.getElementById('col-filter-history-hull')?.value || '').toLowerCase().trim();
+            const filterSn = (document.getElementById('col-filter-history-sn')?.value || '').toLowerCase().trim();
+            const filterType = (document.getElementById('col-filter-history-type')?.value || '').toLowerCase().trim();
+            const filterHm = (document.getElementById('col-filter-history-hm')?.value || '').toLowerCase().trim();
+            const filterMech = (document.getElementById('col-filter-history-mech')?.value || '').toLowerCase().trim();
+            const filterDate = (document.getElementById('col-filter-history-date')?.value || '').toLowerCase().trim();
+            const filterParts = (document.getElementById('col-filter-history-parts')?.value || '').toLowerCase().trim();
+
+            const history = (window.dbState.history || []).filter(h => {
+                const hull = h.hullNumber || h.id || '';
+                const sn = window.getUnitSerialNumber(hull, h);
+                const rawDate = h.date || h.timestamp;
+                const dateStr = rawDate ? new Date(rawDate).toLocaleDateString('id-ID') : '-';
+                const sType = h.serviceType || 'PM 500';
+                const hm = String(h.hmAtService || 0);
+                const mech = h.mechanicId || '-';
+                const parts = h.partsUsed || '-';
+
+                if (globalSearch) {
+                    const mHull = hull.toLowerCase().includes(globalSearch);
+                    const mSn = sn.toLowerCase().includes(globalSearch);
+                    const mType = sType.toLowerCase().includes(globalSearch);
+                    const mMech = mech.toLowerCase().includes(globalSearch);
+                    const mParts = parts.toLowerCase().includes(globalSearch);
+                    if (!mHull && !mSn && !mType && !mMech && !mParts) return false;
+                }
+
+                if (filterHull && !hull.toLowerCase().includes(filterHull)) return false;
+                if (filterSn && !sn.toLowerCase().includes(filterSn)) return false;
+                if (filterType && !sType.toLowerCase().includes(filterType)) return false;
+                if (filterHm && !hm.includes(filterHm)) return false;
+                if (filterMech && !mech.toLowerCase().includes(filterMech)) return false;
+                if (filterDate && !window.matchDateFlexible(dateStr, filterDate)) return false;
+                if (filterParts && !parts.toLowerCase().includes(filterParts)) return false;
+
+                return true;
+            });
+
+            if(history.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="7" class="p-6 text-center text-slate-500">Tidak ada riwayat servis yang cocok.</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = history.map(h => {
+                const hull = h.hullNumber || h.id || '';
+                const sn = window.getUnitSerialNumber(hull, h);
+                const rawDate = h.date || h.timestamp;
+                const dateStr = rawDate ? new Date(rawDate).toLocaleDateString('id-ID') : '-';
+
+                return `
+                    <tr class="hover:bg-slate-800/40 transition">
+                        <td class="p-4 font-bold text-amber-400">${hull}</td>
+                        <td class="p-4 text-emerald-400 font-mono font-bold">${sn}</td>
+                        <td class="p-4 text-white">${h.serviceType || 'PM 500'}</td>
+                        <td class="p-4 font-bold text-emerald-400">${h.hmAtService || 0} HM</td>
+                        <td class="p-4 text-blue-400 font-semibold">${h.mechanicId || '-'}</td>
+                        <td class="p-4 text-slate-300">${dateStr}</td>
+                        <td class="p-4 text-slate-300">${h.partsUsed || '-'}</td>
+                    </tr>
+                `;
+            }).join('');
+        };
+
+        window.exportFleetExcel = function() {
+            const fleet = window.dbState.excavators || [];
+            if (fleet.length === 0) {
+                window.showToast("Tidak ada data armada unit untuk diunduh.", "warning");
+                return;
+            }
+
+            const headers = [
+                "序号",
+                "园区厂号",
+                "设备清单\nEQUIPMENT LIST",
+                "主机编号\nSERIAL NUMBER",
+                "客户姓名\nCUSTOMER NAME",
+                "到货时间\nARRIVAL DATE",
+                "质保到期out of date",
+                "距出保天数\ndays out date",
+                "是否出保\nOut of Warranty",
+                "Engine Type\n发动机型号",
+                "Engine Serial Number\n发动机铭牌",
+                "No Chasis\n车架号",
+                "质保时间(月）\nwarranty month",
+                "Mekanik Penanggung Jawab\nASSIGNED MECHANIC"
+            ];
+
+            const dataRows = fleet.map((f, i) => {
+                const isOutWarr = (f.warrantyStatus || '').toLowerCase().includes('out');
+                return [
+                    i + 1,
+                    f.hullNumber || "-",
+                    f.model || "EXCAVATOR",
+                    f.serialNumber || "-",
+                    f.customerName || f.companyName || "-",
+                    f.lastHMUpdateDate || "-",
+                    f.warrantyEndDate || "-",
+                    "-",
+                    isOutWarr ? "yes" : "no",
+                    "SANY D06S2 / ISUZU",
+                    f.engineSerialNumber || "-",
+                    f.frameSerialNumber || "-",
+                    "24",
+                    f.assignedMechanicId || "-"
+                ];
+            });
+
+            const worksheet = XLSX.utils.aoa_to_sheet([headers, ...dataRows]);
+            worksheet['!cols'] = headers.map(() => ({ wch: 22 }));
+
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, "Populasi Unit");
+
+            XLSX.writeFile(workbook, `Data_Populasi_Unit_SANY_${new Date().toISOString().slice(0, 10)}.xlsx`);
+            window.showToast("Data Populasi Unit SANY berhasil diunduh!", "success");
+        };
+
+        window.exportPopulasiTemplateExcel = function() {
+            const cols = [
+                "序号",
+                "园区厂号",
+                "设备清单\nEQUIPMENT LIST",
+                "主机编号\nSERIAL NUMBER",
+                "客户姓名\nCUSTOMER NAME",
+                "到货时间\nARRIVAL DATE",
+                "质保到期out of date",
+                "距出保天数\ndays out date",
+                "是否出保\nOut of Warranty",
+                "Engine Type\n发动机型号",
+                "Engine Serial Number\n发动机铭牌",
+                "No Chasis\n车架号",
+                "质保时间(月）\nwarranty month",
+                "Mekanik Penanggung Jawab\nASSIGNED MECHANIC"
+            ];
+
+            const worksheet = XLSX.utils.aoa_to_sheet([cols]);
+            worksheet['!cols'] = cols.map(() => ({ wch: 22 }));
+
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, "Template Populasi Unit");
+
+            XLSX.writeFile(workbook, `Template_Populasi_Unit_SANY.xlsx`);
+            window.showToast("Template Populasi Unit SANY berhasil diunduh!", "success");
+        };
+
+        window.exportServiceHistoryTemplateExcel = function() {
+            const cols = [
+                "SERIAL NUMBER",
+                "KODE UNIT",
+                "HM",
+                "DATE",
+                "PART ORDER",
+                "TYPE SERVICE",
+                "MAN POWER"
+            ];
+
+            const sampleRow = [
+                "SY021CEX2895K8",
+                "E904",
+                "500",
+                "17/10/2026",
+                "OIL FILTER (1), FUEL FILTER (1)",
+                "PM 500",
+                "Muhammad Hendry Firmansyah"
+            ];
+
+            const worksheet = XLSX.utils.aoa_to_sheet([cols, sampleRow]);
+            worksheet['!cols'] = [
+                { wch: 22 },
+                { wch: 15 },
+                { wch: 12 },
+                { wch: 15 },
+                { wch: 45 },
+                { wch: 18 },
+                { wch: 25 }
+            ];
+
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, "Template Riwayat Servis");
+
+            XLSX.writeFile(workbook, `Template_Riwayat_Servis_7Kolom.xlsx`);
+            window.showToast("Template Riwayat Servis 7 Kolom berhasil diunduh!", "success");
+        };
+
+        // Initialize Firebase Immediately
+        if (document.readyState === 'loading') {
+            window.addEventListener('DOMContentLoaded', () => { initFirebase(); });
+        } else {
+            initFirebase();
+        }
+    </script>
+</body>
+</html>
